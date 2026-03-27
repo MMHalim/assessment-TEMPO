@@ -1,0 +1,26 @@
+section_slug,prompt,question_type,choice_a,choice_b,choice_c,choice_d,correct_choice,points,sort_order
+general_english,"Not only ______ the customer's issue, but she also offered a complimentary month of the virtual trainer.",mcq,she resolved,did she resolve,she did resolve,has she resolved,B,1,1
+general_english,"If the application's servers hadn't crashed yesterday, we ______ so many backlog tickets today.",mcq,wouldn't have,didn't have,won't have,hadn't had,A,1,2
+general_english,"The customer's billing profile is completely empty; they ______ their subscription last month.",mcq,must cancel,should have canceled,must have canceled,can have canceled,C,1,3
+general_english,"The new virtual fitness modules ______ by the end of next quarter.",mcq,will implement,will be implementing,will have been implemented,have been implemented,C,1,4
+general_english,"The client, ______ complaint was escalated to the floor manager, finally received a full refund for the dumbbells.",mcq,who,whom,whose,which,C,1,5
+general_english,"Quality Assurance insisted that the agent ______ the standard greeting protocol strictly.",mcq,follows,follow,followed,is following,B,1,6
+general_english,"______ the workout plan on the app, the user felt exhausted but highly accomplished.",mcq,Having completed,Completed,To complete,Complete,A,1,7
+general_english,"The agent's ______ tone helped calm the irate caller down quickly.",mcq,abrasive,soothing,erratic,volatile,B,1,8
+general_english,"We need to ask the right probing questions to identify the ______ cause of these app crashes.",mcq,base,root,core,deep,B,1,9
+general_english,"The customer was highly ______, refusing to accept any of the proposed troubleshooting steps.",mcq,intransigent,complacent,apologetic,submissive,A,1,10
+general_english,"Due to a minor technical ______, the exercise video paused mid-workout.",mcq,glitch,blunder,oversight,faux pas,A,1,11
+general_english,"It is ______ that you verify the user's email address before making any changes to their account.",mcq,imperative,optional,trivial,suggested,A,1,12
+general_english,"The new smart dumbbells we sell are practically ______, taking up very little space in an apartment.",mcq,colossal,obsolete,compact,cumbersome,C,1,13
+general_english,"The representative gave a ______ explanation of the billing cycle, leaving no room for confusion.",mcq,convoluted,lucid,vague,dubious,B,1,14
+general_english,"Please hold for just a moment while I ______ your subscription details in our system.",mcq,look up,look over,look out,look down,A,1,15
+general_english,"We need to ______ the launch of the new app update until the software bugs are completely fixed.",mcq,put off,put up,put out,put through,A,1,16
+general_english,"After hearing the benefits, the customer decided to ______ with the premium annual plan.",mcq,go off,go ahead,go back,go down,B,1,17
+general_english,"Since this is a complex hardware defect with the squat rack, I'll need to ______ this issue to Tier 2 support.",mcq,elevate,escalate,promote,lift,B,1,18
+general_english,"To ensure we are on the same page, let's ______ the details of our 30-day return policy.",mcq,run over,run through,run out,run into,B,1,19
+general_english,"Our team is completely swamped right now; we are ______ with calls due to the holiday promotion.",mcq,snowed under,rained out,clouded over,stormed in,A,1,20
+general_english,"Our virtual trainers are exceptionally adept ______ modifying heavy lifting exercises for beginners.",mcq,at,to,in,for,A,1,21
+general_english,"______ the high volume of incoming chats, our wait times are slightly longer than usual.",mcq,Because,Due to,Since,As a result,B,1,22
+general_english,"The company prides itself ______ its excellent customer retention and high CSAT scores.",mcq,in,on,about,with,B,1,23
+general_english,"______ you encounter an error code on the screen, please restart the application immediately.",mcq,Unless,Provided,Should,Whether,C,1,24
+general_english,"We offer a 30-day money-back guarantee, ______ ensuring complete peace of mind for our buyers.",mcq,thereby,however,furthermore,nevertheless,A,1,25
