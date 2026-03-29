@@ -18,6 +18,26 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Tempo Hiring Assessment",
   description: "Candidate assessment for hiring and scoring",
+  icons: {
+    icon: [
+      {
+        url: "https://uselbgcshlnpsitzlaut.supabase.co/storage/v1/object/public/imgs/image%20(26).png?v=1",
+        type: "image/png",
+      },
+    ],
+    shortcut: [
+      {
+        url: "https://uselbgcshlnpsitzlaut.supabase.co/storage/v1/object/public/imgs/image%20(26).png?v=1",
+        type: "image/png",
+      },
+    ],
+    apple: [
+      {
+        url: "https://uselbgcshlnpsitzlaut.supabase.co/storage/v1/object/public/imgs/image%20(26).png?v=1",
+        type: "image/png",
+      },
+    ],
+  },
 };
 
 export default function RootLayout({
