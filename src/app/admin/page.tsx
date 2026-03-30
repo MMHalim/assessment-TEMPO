@@ -339,11 +339,76 @@ export default function AdminPage() {
   })();
 
   const generalEnglishSectionId = sections.find((s) => s.slug === "general_english")?.id ?? null;
+  const callCenterSectionId =
+    sections.find((s) => s.slug === "call_center_protocols")?.id ??
+    sections.find((s) => s.slug === "call_center_protocols_metrics")?.id ??
+    sections.find((s) => s.slug === "call_center_protocols_and_metrics")?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("call center protocols"))?.id ??
+    null;
+  const usaCultureSectionId =
+    sections.find((s) => s.slug === "usa_culture")?.id ??
+    sections.find((s) => s.slug === "usa_general_culture")?.id ??
+    sections.find((s) => s.slug === "us_culture")?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("usa culture"))?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("usa general culture"))?.id ??
+    null;
+  const salesRetentionSectionId =
+    sections.find((s) => s.slug === "sales_retention")?.id ??
+    sections.find((s) => s.slug === "sales_and_retention")?.id ??
+    sections.find((s) => s.slug === "sales_retention_objections")?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("sales & retention"))?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("sales and retention"))?.id ??
+    null;
+  const fitnessKnowledgeSectionId =
+    sections.find((s) => s.slug === "virtual_fitness_knowledge")?.id ??
+    sections.find((s) => s.slug === "general_home_fitness_knowledge")?.id ??
+    sections.find((s) => s.slug === "fitness_knowledge")?.id ??
+    sections.find((s) => s.slug === "fitness_literacy")?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("virtual fitness"))?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("fitness knowledge"))?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("fitness literacy"))?.id ??
+    null;
+  const spokenEnglishSectionId =
+    sections.find((s) => s.slug === "spoken_english")?.id ??
+    sections.find((s) => s.slug === "spoken_english_pronunciation")?.id ??
+    sections.find((s) => s.title.toLowerCase().includes("spoken english"))?.id ??
+    null;
 
   const getEnglishLevelLabel = (correctCount: number) => {
     if (correctCount >= 20) return "C1/C2";
     if (correctCount >= 16) return "B2";
     return "B1-";
+  };
+
+  const getCallCenterLevelLabel = (correctCount: number) => {
+    if (correctCount >= 13) return "Floor-Ready";
+    if (correctCount >= 10) return "Trainable";
+    return "High Risk";
+  };
+
+  const getUsaCultureLevelLabel = (correctCount: number) => {
+    if (correctCount >= 5) return "Culturally Fluent";
+    if (correctCount >= 4) return "Trainable";
+    return "High Risk";
+  };
+
+  const getSalesRetentionLevelLabel = (correctCount: number) => {
+    if (correctCount >= 5) return "Retention Specialist";
+    if (correctCount >= 4) return "Trainable";
+    return "High Risk";
+  };
+
+  const getFitnessKnowledgeLevelLabel = (correctCount: number) => {
+    if (correctCount >= 5) return "High Fitness Literacy";
+    if (correctCount >= 4) return "Trainable";
+    return "Foundational Training";
+  };
+
+  const getSpokenEnglishLevelLabel = (percent: number) => {
+    if (percent >= 90) return "Excellent";
+    if (percent >= 75) return "Good";
+    if (percent >= 60) return "Trainable";
+    return "High Risk";
   };
 
   async function addTypingParagraph() {
@@ -864,16 +929,25 @@ export default function AdminPage() {
                             const question = ans.assessment_questions;
                             if (!question) return;
                             
-                            // Simple scoring: if they answered, give points (in a real app, check correct_choice)
-                            // Note: For a real app we'd join with questions to check correct_choice. 
-                            // Here we assume points are awarded if answer exists for simplicity, or we can look up from questions state
                             const qData = questions.find(q => q.id === ans.question_id);
-                            const isCorrect = qData?.question_type === 'mcq' ? ans.selected_choice === qData.correct_choice : true; // Assuming spoken is auto-correct for now or manually graded
-                            
-                            if (isCorrect) {
-                              const points = question.points || 1;
-                              scoresBySection[question.section_id] = (scoresBySection[question.section_id] || 0) + points;
-                              totalScore += points;
+                            const rawAwarded = (ans as { score_awarded?: unknown }).score_awarded;
+                            const awarded =
+                              typeof rawAwarded === "number"
+                                ? rawAwarded
+                                : rawAwarded === null || rawAwarded === undefined
+                                  ? null
+                                  : Number(rawAwarded);
+
+                            let scoreToAdd = Number.isFinite(awarded as number) ? (awarded as number) : 0;
+                            if (!Number.isFinite(awarded as number)) {
+                              if (qData?.question_type === "mcq" && ans.selected_choice && qData.correct_choice) {
+                                scoreToAdd = ans.selected_choice === qData.correct_choice ? (question.points || 1) : 0;
+                              }
+                            }
+
+                            if (scoreToAdd > 0) {
+                              scoresBySection[question.section_id] = (scoresBySection[question.section_id] || 0) + scoreToAdd;
+                              totalScore += scoreToAdd;
                             }
                           });
 
@@ -893,6 +967,84 @@ export default function AdminPage() {
                             return { answered, correct };
                           })();
 
+                          const callCenterStats = (() => {
+                            if (!callCenterSectionId) return null;
+                            let answered = 0;
+                            let correct = 0;
+                            for (const ans of attemptAns) {
+                              const qData = questions.find(q => q.id === ans.question_id);
+                              if (!qData) continue;
+                              if (qData.section_id !== callCenterSectionId) continue;
+                              if (qData.question_type !== "mcq") continue;
+                              if (!ans.selected_choice) continue;
+                              answered += 1;
+                              if (ans.selected_choice === qData.correct_choice) correct += 1;
+                            }
+                            return { answered, correct };
+                          })();
+
+                          const usaCultureStats = (() => {
+                            if (!usaCultureSectionId) return null;
+                            let answered = 0;
+                            let correct = 0;
+                            for (const ans of attemptAns) {
+                              const qData = questions.find(q => q.id === ans.question_id);
+                              if (!qData) continue;
+                              if (qData.section_id !== usaCultureSectionId) continue;
+                              if (qData.question_type !== "mcq") continue;
+                              if (!ans.selected_choice) continue;
+                              answered += 1;
+                              if (ans.selected_choice === qData.correct_choice) correct += 1;
+                            }
+                            return { answered, correct };
+                          })();
+
+                          const salesRetentionStats = (() => {
+                            if (!salesRetentionSectionId) return null;
+                            let answered = 0;
+                            let correct = 0;
+                            for (const ans of attemptAns) {
+                              const qData = questions.find(q => q.id === ans.question_id);
+                              if (!qData) continue;
+                              if (qData.section_id !== salesRetentionSectionId) continue;
+                              if (qData.question_type !== "mcq") continue;
+                              if (!ans.selected_choice) continue;
+                              answered += 1;
+                              if (ans.selected_choice === qData.correct_choice) correct += 1;
+                            }
+                            return { answered, correct };
+                          })();
+
+                          const fitnessKnowledgeStats = (() => {
+                            if (!fitnessKnowledgeSectionId) return null;
+                            let answered = 0;
+                            let correct = 0;
+                            for (const ans of attemptAns) {
+                              const qData = questions.find(q => q.id === ans.question_id);
+                              if (!qData) continue;
+                              if (qData.section_id !== fitnessKnowledgeSectionId) continue;
+                              if (qData.question_type !== "mcq") continue;
+                              if (!ans.selected_choice) continue;
+                              answered += 1;
+                              if (ans.selected_choice === qData.correct_choice) correct += 1;
+                            }
+                            return { answered, correct };
+                          })();
+
+                          const spokenEnglishStats = (() => {
+                            if (!spokenEnglishSectionId) return null;
+                            const maxPoints = questions
+                              .filter((q) => q.section_id === spokenEnglishSectionId)
+                              .reduce((sum, q) => sum + (q.points || 0), 0);
+                            const answered = attemptAns.some((a) => {
+                              const q = questions.find((qq) => qq.id === a.question_id);
+                              return q?.section_id === spokenEnglishSectionId;
+                            });
+                            const score = scoresBySection[spokenEnglishSectionId] || 0;
+                            const percent = maxPoints > 0 ? (score / maxPoints) * 100 : 0;
+                            return { answered, maxPoints, percent };
+                          })();
+
                           return (
                             <tr key={attempt.id} className="border-b dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/5">
                               <td className="py-2 px-2">{cand?.name || 'Unknown'}</td>
@@ -904,9 +1056,38 @@ export default function AdminPage() {
                                 <td key={s.id} className="py-2 px-2">
                                   {(() => {
                                     const score = scoresBySection[s.id] || 0;
-                                    if (s.id !== generalEnglishSectionId) return score;
-                                    if (!generalEnglishStats || generalEnglishStats.answered === 0) return score;
-                                    return `${score} (${getEnglishLevelLabel(generalEnglishStats.correct)})`;
+                                    if (s.id === generalEnglishSectionId) {
+                                      if (!generalEnglishStats || generalEnglishStats.answered === 0) return score;
+                                      return `${score} (${getEnglishLevelLabel(generalEnglishStats.correct)})`;
+                                    }
+
+                                    if (s.id === callCenterSectionId) {
+                                      if (!callCenterStats || callCenterStats.answered === 0) return score;
+                                      return `${score} (${getCallCenterLevelLabel(callCenterStats.correct)})`;
+                                    }
+
+                                    if (s.id === usaCultureSectionId) {
+                                      if (!usaCultureStats || usaCultureStats.answered === 0) return score;
+                                      return `${score} (${getUsaCultureLevelLabel(usaCultureStats.correct)})`;
+                                    }
+
+                                    if (s.id === salesRetentionSectionId) {
+                                      if (!salesRetentionStats || salesRetentionStats.answered === 0) return score;
+                                      return `${score} (${getSalesRetentionLevelLabel(salesRetentionStats.correct)})`;
+                                    }
+
+                                    if (s.id === fitnessKnowledgeSectionId) {
+                                      if (!fitnessKnowledgeStats || fitnessKnowledgeStats.answered === 0) return score;
+                                      return `${score} (${getFitnessKnowledgeLevelLabel(fitnessKnowledgeStats.correct)})`;
+                                    }
+
+                                    if (s.id === spokenEnglishSectionId) {
+                                      if (!spokenEnglishStats || !spokenEnglishStats.answered) return score;
+                                      const label = getSpokenEnglishLevelLabel(spokenEnglishStats.percent);
+                                      return `${score} (${label})`;
+                                    }
+
+                                    return score;
                                   })()}
                                 </td>
                               ))}
