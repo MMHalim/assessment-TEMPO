@@ -79,6 +79,26 @@ export async function POST(request: Request) {
     );
   }
 
+  const { count: completedCount, error: completedError } = await supabase
+    .from("assessment_attempts")
+    .select("id", { count: "exact", head: true })
+    .eq("candidate_email", matchedEmail)
+    .not("completed_at", "is", null);
+
+  if (completedError) {
+    return NextResponse.json(
+      { ok: false, error: completedError.message },
+      { status: 500 },
+    );
+  }
+
+  if ((completedCount ?? 0) > 0) {
+    return NextResponse.json(
+      { ok: false, error: "You already submitted this assessment." },
+      { status: 409 },
+    );
+  }
+
   const { data: existingAttempts, error: existingError } = await supabase
     .from("assessment_attempts")
     .select("id, started_at")
