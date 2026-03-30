@@ -66,6 +66,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const [typingStartedAtMs, setTypingStartedAtMs] = useState<number | null>(null);
   const [typingTimeLeft, setTypingTimeLeft] = useState<number>(60);
   const [typingStage, setTypingStage] = useState<"idle" | "running" | "saving" | "done">("idle");
+  const [typingCompleted, setTypingCompleted] = useState(false);
   const [typingSummary, setTypingSummary] = useState<{
     wpm: number;
     accuracy: number;
@@ -296,6 +297,20 @@ export default function AssessmentRunner({ attemptId }: Props) {
     ? (questionIndex + 1) / currentQuestions.length
     : 0;
 
+  const isSpokenEnglishSection = useCallback((s: AssessmentSection | null) => {
+    if (!s) return false;
+    const slug = (s.slug ?? "").toLowerCase();
+    const title = (s.title ?? "").toLowerCase();
+    return slug.includes("spoken_english") || title.includes("spoken english");
+  }, []);
+
+  const isTypingSection = useCallback((s: AssessmentSection | null) => {
+    if (!s) return false;
+    const slug = (s.slug ?? "").toLowerCase();
+    const title = (s.title ?? "").toLowerCase();
+    return slug.includes("typing") || title.includes("typing");
+  }, []);
+
   const load = useCallback(async () => {
     if (!supabase) {
       setStep({
@@ -311,6 +326,30 @@ export default function AssessmentRunner({ attemptId }: Props) {
         .select("id, slug, title, description, sort_order, time_limit_seconds")
         .order("sort_order", { ascending: true });
       if (sectionsError) throw sectionsError;
+
+      const desiredOrder = [
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase() === "general_english" || (s.title ?? "").toLowerCase().includes("general english"),
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase().includes("call_center") || (s.title ?? "").toLowerCase().includes("call center"),
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase().includes("usa") || (s.title ?? "").toLowerCase().includes("usa culture"),
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase().includes("sales") || (s.title ?? "").toLowerCase().includes("sales & retention") || (s.title ?? "").toLowerCase().includes("sales and retention"),
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase().includes("fitness") || (s.title ?? "").toLowerCase().includes("virtual fitness"),
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase().includes("typing") || (s.title ?? "").toLowerCase().includes("typing"),
+        (s: AssessmentSection) => (s.slug ?? "").toLowerCase().includes("spoken_english") || (s.title ?? "").toLowerCase().includes("spoken english"),
+      ] as const;
+
+      const rankSection = (s: AssessmentSection) => {
+        const idx = desiredOrder.findIndex((fn) => fn(s));
+        return idx === -1 ? 999 : idx;
+      };
+
+      const sortedSections = [...(sectionsData as AssessmentSection[])].sort((a, b) => {
+        const ra = rankSection(a);
+        const rb = rankSection(b);
+        if (ra !== rb) return ra - rb;
+        const soA = typeof a.sort_order === "number" ? a.sort_order : 0;
+        const soB = typeof b.sort_order === "number" ? b.sort_order : 0;
+        return soA - soB;
+      });
 
       const { data: questionsData, error: questionsError } = await supabase
         .from("assessment_questions")
@@ -354,7 +393,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
           restoredFromSession = true;
           
           // Ensure indices are within bounds
-          if (startSectionIndex >= sectionsData.length) startSectionIndex = 0;
+          if (startSectionIndex >= sortedSections.length) startSectionIndex = 0;
           // Note: we can't fully validate questionIndex until we build the map, 
           // but we'll use it as a starting point
         } catch (e) {
@@ -372,8 +411,8 @@ export default function AssessmentRunner({ attemptId }: Props) {
         const answered = new Set<string>((answersData ?? []).map((r) => String((r as { question_id: string }).question_id)));
 
         let found = false;
-        for (let si = 0; si < sectionsData.length; si++) {
-          const section = sectionsData[si] as AssessmentSection;
+        for (let si = 0; si < sortedSections.length; si++) {
+          const section = sortedSections[si] as AssessmentSection;
           const qs = map[section.id] ?? [];
           const qi = qs.findIndex((q) => !answered.has(q.id));
           if (qi !== -1) {
@@ -390,12 +429,12 @@ export default function AssessmentRunner({ attemptId }: Props) {
         }
       }
 
-      setSections(sectionsData as AssessmentSection[]);
+      setSections(sortedSections as AssessmentSection[]);
       setQuestionsBySection(map);
       setSectionIndex(startSectionIndex);
       
       // Ensure question index is valid for the restored section
-      const sectionQuestions = map[sectionsData[startSectionIndex].id] || [];
+      const sectionQuestions = map[sortedSections[startSectionIndex].id] || [];
       if (startQuestionIndex >= sectionQuestions.length) {
         startQuestionIndex = 0;
       }
@@ -409,6 +448,8 @@ export default function AssessmentRunner({ attemptId }: Props) {
         .eq("attempt_id", attemptId)
         .maybeSingle();
       if (typingRowError) throw typingRowError;
+
+      setTypingCompleted(Boolean(typingRow?.completed_at));
 
       if (!typingRow?.completed_at) {
         let paragraphId = typingRow?.paragraph_id ? String(typingRow.paragraph_id) : "";
@@ -475,8 +516,6 @@ export default function AssessmentRunner({ attemptId }: Props) {
         setTypingTimeLeft(60);
         setTypingStage("idle");
         setTypingSummary(null);
-        setStep({ type: "typing" });
-        return;
       }
 
       setStep({ type: "ready" });
@@ -513,6 +552,27 @@ export default function AssessmentRunner({ attemptId }: Props) {
     if (!supabase) return;
     void load();
   }, [load, supabase]);
+
+  useEffect(() => {
+    if (step.type !== "ready") return;
+    if (!currentSection) return;
+    if (typingCompleted) return;
+    if (!isTypingSection(currentSection) && !isSpokenEnglishSection(currentSection)) return;
+    if (!typingParagraph) return;
+    setTypingInput("");
+    setTypingStartedAtMs(null);
+    setTypingTimeLeft(60);
+    setTypingStage("idle");
+    setTypingSummary(null);
+    setStep({ type: "typing" });
+  }, [currentSection, isSpokenEnglishSection, isTypingSection, step.type, typingCompleted, typingParagraph]);
+
+  useEffect(() => {
+    if (step.type !== "ready") return;
+    if (!currentSection) return;
+    if (currentQuestions.length > 0) return;
+    void advanceToNextSectionOrFinish();
+  }, [advanceToNextSectionOrFinish, currentQuestions.length, currentSection, step.type]);
 
   const computeTypingSummary = useCallback((source: string, typed: string) => {
     const s = source ?? "";
@@ -816,6 +876,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
       return;
     }
     setTypingSummary(summary);
+    setTypingCompleted(true);
     setTypingStage("done");
   }, [
     attemptId,
@@ -901,6 +962,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
       extraChars: 0,
       missingChars: (typingParagraph.text ?? "").length,
     });
+    setTypingCompleted(true);
     setTypingStage("done");
   }, [attemptId, step.type, supabase, typingParagraph, typingStage, typingStartedAtMs]);
 

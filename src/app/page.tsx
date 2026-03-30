@@ -7,8 +7,60 @@ import {
   ShieldCheck,
   TrendingUp,
 } from "lucide-react";
+import { getSupabaseServerClient } from "@/lib/supabaseClient";
 
-export default function Home() {
+type SectionRow = { slug: string; title: string; time_limit_seconds: number };
+
+function toMinutesLabel(seconds: number | null | undefined): string {
+  const s = typeof seconds === "number" && Number.isFinite(seconds) ? seconds : 0;
+  const mins = Math.max(1, Math.ceil(s / 60));
+  return `${mins} Min`;
+}
+
+export default async function Home() {
+  const supabase = getSupabaseServerClient();
+  const { data: sectionRows } = supabase
+    ? await supabase
+        .from("assessment_sections")
+        .select("slug,title,time_limit_seconds")
+    : { data: null };
+
+  const sections = (sectionRows ?? []) as SectionRow[];
+  const findSectionSeconds = (match: (s: SectionRow) => boolean, fallbackSeconds: number) => {
+    const row = sections.find(match);
+    const v = row?.time_limit_seconds;
+    return typeof v === "number" && Number.isFinite(v) ? v : fallbackSeconds;
+  };
+
+  const generalEnglishSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase() === "general_english" || (s.title ?? "").toLowerCase().includes("general english"),
+    900,
+  );
+  const callCenterSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase().includes("call_center") || (s.title ?? "").toLowerCase().includes("call center"),
+    900,
+  );
+  const usaCultureSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase().includes("usa") || (s.title ?? "").toLowerCase().includes("usa culture"),
+    600,
+  );
+  const salesRetentionSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase().includes("sales") || (s.title ?? "").toLowerCase().includes("sales & retention") || (s.title ?? "").toLowerCase().includes("sales and retention"),
+    600,
+  );
+  const fitnessSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase().includes("fitness") || (s.title ?? "").toLowerCase().includes("virtual fitness"),
+    600,
+  );
+  const spokenEnglishSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase().includes("spoken_english") || (s.title ?? "").toLowerCase().includes("spoken english"),
+    600,
+  );
+  const typingSeconds = findSectionSeconds(
+    (s) => (s.slug ?? "").toLowerCase().includes("typing") || (s.title ?? "").toLowerCase().includes("typing"),
+    60,
+  );
+
   return (
     <main className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col gap-10 px-6 py-10">
       <div className="flex flex-col gap-5">
@@ -34,27 +86,13 @@ export default function Home() {
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <div className="card p-6 dark:card-dark">
             <div className="flex items-start gap-4">
-              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-rose-500/10 text-rose-700 dark:text-rose-300">
-                <Keyboard className="h-5 w-5" />
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-sm font-semibold">Typing Speed & Accuracy</div>
-                <div className="text-sm text-slate-600 dark:text-slate-300">
-                  1 minute (WPM + accuracy)
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="card p-6 dark:card-dark">
-            <div className="flex items-start gap-4">
               <div className="grid h-11 w-11 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">
                 <BookOpen className="h-5 w-5" />
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-sm font-semibold">General English</div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
-                  25 questions (C1 level)
+                  {toMinutesLabel(generalEnglishSeconds)}
                 </div>
               </div>
             </div>
@@ -70,7 +108,7 @@ export default function Home() {
                   Call Center Protocols
                 </div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
-                  10 questions (metrics & SOP)
+                  {toMinutesLabel(callCenterSeconds)}
                 </div>
               </div>
             </div>
@@ -84,7 +122,7 @@ export default function Home() {
               <div className="flex flex-col gap-1">
                 <div className="text-sm font-semibold">USA Culture</div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
-                  5 questions (general)
+                  {toMinutesLabel(usaCultureSeconds)}
                 </div>
               </div>
             </div>
@@ -98,7 +136,7 @@ export default function Home() {
               <div className="flex flex-col gap-1">
                 <div className="text-sm font-semibold">Sales & Retention</div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
-                  5 questions (objections)
+                  {toMinutesLabel(salesRetentionSeconds)}
                 </div>
               </div>
             </div>
@@ -114,7 +152,21 @@ export default function Home() {
                   Virtual Fitness Knowledge
                 </div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
-                  5 questions (domain)
+                  {toMinutesLabel(fitnessSeconds)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card p-6 dark:card-dark">
+            <div className="flex items-start gap-4">
+              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-rose-500/10 text-rose-700 dark:text-rose-300">
+                <Keyboard className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="text-sm font-semibold">Typing Speed & Accuracy</div>
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  {toMinutesLabel(typingSeconds)}
                 </div>
               </div>
             </div>
@@ -128,7 +180,7 @@ export default function Home() {
               <div className="flex flex-col gap-1">
                 <div className="text-sm font-semibold">Spoken English</div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
-                  Pronunciation test
+                  {toMinutesLabel(spokenEnglishSeconds)}
                 </div>
               </div>
             </div>
