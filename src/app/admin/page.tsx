@@ -121,7 +121,6 @@ export default function AdminPage() {
   };
 
   const filteredEmpDBData = empDBData.filter(isEmpInFilter);
-  const filteredEmpEmails = new Set(filteredEmpDBData.map(e => e.Email_Address).concat(filteredEmpDBData.map(e => e.Email)));
 
   const isAttemptInFilter = (att: Attempt) => {
     if (!selectedStartISO || !selectedEndISO) return true;
@@ -135,14 +134,7 @@ export default function AdminPage() {
     return dn >= sn && dn <= en;
   };
   
-  // Filter attempts based on whether the candidate is in the filtered empDB
-  const filteredAttempts = attempts.filter(att => {
-    if (!isAttemptInFilter(att)) return false;
-    if (totalDays === 0) return true;
-    const cand = candidates.find(c => c.email === att.candidate_email);
-    const emailToMatch = cand?.email || att.candidate_email;
-    return filteredEmpEmails.has(emailToMatch);
-  });
+  const filteredAttempts = attempts.filter(isAttemptInFilter);
   
   const groupedAttempts = (() => {
     const answerCounts = new Map<string, number>();
@@ -843,7 +835,7 @@ export default function AdminPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="border border-slate-200 dark:border-white/10 rounded-xl p-4">
                       <h3 className="font-semibold mb-4 text-slate-700 dark:text-slate-300">Candidates by Source</h3>
-                      <div className="flex flex-col gap-3 h-[250px]">
+                      <div className="flex flex-col gap-3">
                         {(() => {
                           const sourceCounts = filteredEmpDBData.reduce((acc, curr) => {
                             const source = curr.How_did_you_hear_about_the_Job_post_offer || 'Unknown';
@@ -916,8 +908,24 @@ export default function AdminPage() {
                       </thead>
                       <tbody>
                         {groupedAttempts.map(attempt => {
-                          const cand = candidates.find(c => c.email === attempt.candidate_email);
-                          const email = cand?.email || attempt.candidate_email || empDBData.find(e => e.Email_Address === attempt.candidate_email || e.Email === attempt.candidate_email)?.Email_Address || 'Unknown';
+                          const attemptEmail = String(attempt.candidate_email ?? "").trim();
+                          const normalizedAttemptEmail = attemptEmail.toLowerCase();
+                          const cand = candidates.find((c) => String(c?.email ?? "").trim().toLowerCase() === normalizedAttemptEmail);
+                          const email =
+                            String(cand?.email ?? "").trim() ||
+                            attemptEmail ||
+                            String(
+                              empDBData.find(
+                                (e) =>
+                                  String(e.Email_Address ?? "").trim().toLowerCase() === normalizedAttemptEmail ||
+                                  String(e.Email ?? "").trim().toLowerCase() === normalizedAttemptEmail,
+                              )?.Email_Address ?? "",
+                            ).trim() ||
+                            "Unknown";
+                          const displayName =
+                            String(cand?.name ?? "").trim() ||
+                            String(attempt.candidate_name ?? "").trim() ||
+                            "Unknown";
                           const typing = typingByAttemptId.get(attempt.id);
                           
                           // Calculate scores per section
@@ -1047,7 +1055,7 @@ export default function AdminPage() {
 
                           return (
                             <tr key={attempt.id} className="border-b dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/5">
-                              <td className="py-2 px-2">{cand?.name || 'Unknown'}</td>
+                              <td className="py-2 px-2">{displayName}</td>
                               <td className="py-2 px-2">{email}</td>
                               <td className="py-2 px-2">{new Date(attempt.started_at).toLocaleDateString()}</td>
                               <td className="py-2 px-2">{typing?.wpm ?? "-"}</td>

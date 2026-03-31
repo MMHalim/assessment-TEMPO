@@ -23,6 +23,7 @@ type Step =
   | { type: "loading" }
   | { type: "error"; message: string }
   | { type: "typing" }
+  | { type: "review" }
   | { type: "ready" }
   | { type: "done"; totalScore: number; maxScore: number };
 
@@ -50,6 +51,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const [questionsBySection, setQuestionsBySection] = useState<
     Record<string, AssessmentQuestion[]>
   >({});
+  const [answeredQuestionIds, setAnsweredQuestionIds] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
 
   const [sectionIndex, setSectionIndex] = useState(0);
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -182,45 +186,28 @@ export default function AssessmentRunner({ attemptId }: Props) {
     }
   }, [attemptId, sections, questionsBySection, supabase]);
 
-  const upsertZeroAnswersForSection = useCallback(
-    async (sectionId: string) => {
-      if (!supabase) return;
-      const qs = questionsBySection[sectionId] ?? [];
-      const ids = qs.map((q) => q.id);
-      if (ids.length === 0) return;
-
-      const { data: existingRows, error: existingError } = await supabase
-        .from("assessment_attempt_answers")
-        .select("question_id")
-        .eq("attempt_id", attemptId)
-        .in("question_id", ids);
-      if (existingError) throw existingError;
-
-      const existing = new Set<string>(
-        (existingRows ?? []).map((r) => String((r as { question_id?: unknown }).question_id ?? "")),
-      );
-      const missing = ids.filter((id) => !existing.has(id));
-      if (missing.length === 0) return;
-
-      const rows = missing.map((qid) => ({
-        attempt_id: attemptId,
-        question_id: qid,
-        selected_choice: null,
-        score_awarded: 0,
-      }));
-
-      const { error: upsertError } = await supabase
-        .from("assessment_attempt_answers")
-        .upsert(rows, { onConflict: "attempt_id,question_id" });
-      if (upsertError) throw upsertError;
+  const findFirstIncomplete = useCallback(
+    (answered: Set<string>) => {
+      for (let si = 0; si < sections.length; si++) {
+        const s = sections[si];
+        const slug = (s?.slug ?? "").toLowerCase();
+        const title = (s?.title ?? "").toLowerCase();
+        const isTyping = slug.includes("typing") || title.includes("typing");
+        if (isTyping) {
+          if (!typingCompleted) return { sectionIndex: si, questionIndex: 0, step: "typing" as const };
+          continue;
+        }
+        const qs = questionsBySection[s.id] ?? [];
+        if (qs.length === 0) continue;
+        const qi = qs.findIndex((q) => !answered.has(q.id));
+        if (qi !== -1) return { sectionIndex: si, questionIndex: qi, step: "ready" as const };
+      }
+      return null;
     },
-    [attemptId, questionsBySection, supabase],
+    [questionsBySection, sections, typingCompleted],
   );
 
-  const advanceToNextSectionOrFinish = useCallback(async () => {
-    if (!currentSection) return;
-    await upsertZeroAnswersForSection(currentSection.id);
-
+  const advanceToNextSectionOrReview = useCallback(async () => {
     const isLastSection = sectionIndex + 1 >= sections.length;
     if (!isLastSection) {
       const nextSectionIndex = sectionIndex + 1;
@@ -241,15 +228,14 @@ export default function AssessmentRunner({ attemptId }: Props) {
       return;
     }
 
+    const firstIncomplete = findFirstIncomplete(answeredQuestionIds);
+    if (firstIncomplete) {
+      setStep({ type: "review" });
+      return;
+    }
+
     await finishAssessment();
-  }, [
-    attemptId,
-    currentSection,
-    finishAssessment,
-    sectionIndex,
-    sections,
-    upsertZeroAnswersForSection,
-  ]);
+  }, [attemptId, answeredQuestionIds, findFirstIncomplete, finishAssessment, sectionIndex, sections]);
 
   // Handle countdown timer
   useEffect(() => {
@@ -277,8 +263,8 @@ export default function AssessmentRunner({ attemptId }: Props) {
     }
     if (hasAutoAdvancedOnTimeUpRef.current) return;
     hasAutoAdvancedOnTimeUpRef.current = true;
-    void advanceToNextSectionOrFinish();
-  }, [advanceToNextSectionOrFinish, step.type, timeLeft]);
+    void advanceToNextSectionOrReview();
+  }, [advanceToNextSectionOrReview, step.type, timeLeft]);
 
   // Disable back button and show warning modal
   useEffect(() => {
@@ -351,6 +337,31 @@ export default function AssessmentRunner({ attemptId }: Props) {
         return soA - soB;
       });
 
+      const hasTypingSection = sortedSections.some((s) => {
+        const slug = (s.slug ?? "").toLowerCase();
+        const title = (s.title ?? "").toLowerCase();
+        return slug.includes("typing") || title.includes("typing");
+      });
+
+      if (!hasTypingSection) {
+        const spokenIdx = sortedSections.findIndex((s) => {
+          const slug = (s.slug ?? "").toLowerCase();
+          const title = (s.title ?? "").toLowerCase();
+          return slug.includes("spoken_english") || title.includes("spoken english");
+        });
+
+        const insertAt = spokenIdx === -1 ? sortedSections.length : spokenIdx;
+        const typingSection: AssessmentSection = {
+          id: "__typing__",
+          slug: "typing",
+          title: "Typing Speed & Accuracy",
+          description: null,
+          sort_order: 9999,
+          time_limit_seconds: 60,
+        };
+        sortedSections.splice(insertAt, 0, typingSection);
+      }
+
       const { data: questionsData, error: questionsError } = await supabase
         .from("assessment_questions")
         .select(
@@ -401,15 +412,18 @@ export default function AssessmentRunner({ attemptId }: Props) {
         }
       }
 
+      const { data: answersData, error: answersError } = await supabase
+        .from("assessment_attempt_answers")
+        .select("question_id")
+        .eq("attempt_id", attemptId);
+      if (answersError) throw answersError;
+
+      const answered = new Set<string>(
+        (answersData ?? []).map((r) => String((r as { question_id: string }).question_id)),
+      );
+      setAnsweredQuestionIds(answered);
+
       if (!restoredFromSession) {
-        const { data: answersData, error: answersError } = await supabase
-          .from("assessment_attempt_answers")
-          .select("question_id")
-          .eq("attempt_id", attemptId);
-        if (answersError) throw answersError;
-
-        const answered = new Set<string>((answersData ?? []).map((r) => String((r as { question_id: string }).question_id)));
-
         let found = false;
         for (let si = 0; si < sortedSections.length; si++) {
           const section = sortedSections[si] as AssessmentSection;
@@ -450,6 +464,20 @@ export default function AssessmentRunner({ attemptId }: Props) {
       if (typingRowError) throw typingRowError;
 
       setTypingCompleted(Boolean(typingRow?.completed_at));
+
+      if (!typingRow?.completed_at) {
+        const typingIdx = sortedSections.findIndex((s) => {
+          const slug = (s.slug ?? "").toLowerCase();
+          const title = (s.title ?? "").toLowerCase();
+          return slug.includes("typing") || title.includes("typing");
+        });
+        if (typingIdx !== -1 && startSectionIndex >= typingIdx) {
+          setSectionIndex(typingIdx);
+          setQuestionIndex(0);
+          setSelectedChoice(null);
+          setTimeLeft(null);
+        }
+      }
 
       if (!typingRow?.completed_at) {
         let paragraphId = typingRow?.paragraph_id ? String(typingRow.paragraph_id) : "";
@@ -571,8 +599,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
     if (step.type !== "ready") return;
     if (!currentSection) return;
     if (currentQuestions.length > 0) return;
-    void advanceToNextSectionOrFinish();
-  }, [advanceToNextSectionOrFinish, currentQuestions.length, currentSection, step.type]);
+    if (isTypingSection(currentSection)) return;
+    void advanceToNextSectionOrReview();
+  }, [advanceToNextSectionOrReview, currentQuestions.length, currentSection, isTypingSection, step.type]);
 
   const computeTypingSummary = useCallback((source: string, typed: string) => {
     const s = source ?? "";
@@ -906,23 +935,31 @@ export default function AssessmentRunner({ attemptId }: Props) {
   }, [finishTyping, step.type, typingStage, typingTimeLeft]);
 
   const continueToEnglish = useCallback(() => {
+    if (isTypingSection(currentSection)) {
+      setSectionIndex((v) => {
+        const next = v + 1;
+        if (next >= sections.length) return v;
+        return next;
+      });
+      setQuestionIndex(0);
+      setSelectedChoice(null);
+    }
     setTimeLeft(null);
     setStep({ type: "ready" });
-  }, []);
+  }, [currentSection, isTypingSection, sections.length]);
 
   const skipCurrentSection = useCallback(async () => {
     if (step.type !== "ready") return;
-    if (!supabase || !currentSection) return;
     setIsSaving(true);
     try {
-      await advanceToNextSectionOrFinish();
+      await advanceToNextSectionOrReview();
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to skip section.";
       setStep({ type: "error", message });
     } finally {
       setIsSaving(false);
     }
-  }, [advanceToNextSectionOrFinish, currentSection, step.type, supabase]);
+  }, [advanceToNextSectionOrReview, step.type]);
 
   const skipTypingTest = useCallback(async () => {
     if (step.type !== "typing") return;
@@ -1011,6 +1048,10 @@ export default function AssessmentRunner({ attemptId }: Props) {
 
         if (insertError) throw insertError;
 
+        const nextAnswered = new Set(answeredQuestionIds);
+        nextAnswered.add(currentQuestion.id);
+        setAnsweredQuestionIds(nextAnswered);
+
         const isLastQuestion = questionIndex + 1 >= currentQuestions.length;
         if (!isLastQuestion) {
           setQuestionIndex((v) => v + 1);
@@ -1029,6 +1070,13 @@ export default function AssessmentRunner({ attemptId }: Props) {
           return;
         }
 
+        const firstIncomplete = findFirstIncomplete(nextAnswered);
+        if (firstIncomplete) {
+          setStep({ type: "review" });
+          setIsSaving(false);
+          return;
+        }
+
         await finishAssessment();
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to save your answer.";
@@ -1043,6 +1091,8 @@ export default function AssessmentRunner({ attemptId }: Props) {
       currentSection,
       finishAssessment,
       questionIndex,
+      answeredQuestionIds,
+      findFirstIncomplete,
       sectionIndex,
       sections.length,
       supabase,
@@ -1087,6 +1137,10 @@ export default function AssessmentRunner({ attemptId }: Props) {
 
       if (insertError) throw insertError;
 
+      const nextAnswered = new Set(answeredQuestionIds);
+      nextAnswered.add(currentQuestion.id);
+      setAnsweredQuestionIds(nextAnswered);
+
       const isLastQuestion = questionIndex + 1 >= currentQuestions.length;
       if (!isLastQuestion) {
         setQuestionIndex((v) => v + 1);
@@ -1105,6 +1159,13 @@ export default function AssessmentRunner({ attemptId }: Props) {
         return;
       }
 
+      const firstIncomplete = findFirstIncomplete(nextAnswered);
+      if (firstIncomplete) {
+        setStep({ type: "review" });
+        setIsSaving(false);
+        return;
+      }
+
       await finishAssessment();
     } catch (e) {
       const message =
@@ -1113,6 +1174,45 @@ export default function AssessmentRunner({ attemptId }: Props) {
       setIsSaving(false);
     }
   }
+
+  const goToSection = useCallback(
+    (targetIndex: number) => {
+      const target = sections[targetIndex];
+      if (!target) return;
+
+      const qs = questionsBySection[target.id] ?? [];
+      const firstUnansweredIndex = qs.findIndex((q) => !answeredQuestionIds.has(q.id));
+      const nextQuestionIndex = firstUnansweredIndex === -1 ? 0 : firstUnansweredIndex;
+
+      setSectionIndex(targetIndex);
+      setQuestionIndex(nextQuestionIndex);
+      setSelectedChoice(null);
+      setTimeLeft(null);
+      hasAutoAdvancedOnTimeUpRef.current = false;
+
+      const nextSectionTimeLimit = target.time_limit_seconds || 600;
+      const stateToSave = {
+        sectionIndex: targetIndex,
+        questionIndex: nextQuestionIndex,
+        timeLeft: nextSectionTimeLimit,
+        lastUpdated: Date.now(),
+      };
+      sessionStorage.setItem(`assessment_state_${attemptId}`, JSON.stringify(stateToSave));
+
+      if (isTypingSection(target) && !typingCompleted) {
+        setTypingInput("");
+        setTypingStartedAtMs(null);
+        setTypingTimeLeft(60);
+        setTypingStage("idle");
+        setTypingSummary(null);
+        setStep({ type: "typing" });
+        return;
+      }
+
+      setStep({ type: "ready" });
+    },
+    [answeredQuestionIds, attemptId, isTypingSection, questionsBySection, sections, typingCompleted],
+  );
 
   if (step.type === "loading") {
     return (
@@ -1135,27 +1235,82 @@ export default function AssessmentRunner({ attemptId }: Props) {
     const timerText = typingStage === "idle" ? "01:00" : `${mm}:${ss}`;
 
     return (
-      <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-10">
-        <div className="card p-7 dark:card-dark">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex flex-col gap-1">
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 py-10">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex flex-col gap-1">
+            <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+              Assessment
+            </div>
+            <div className="text-lg font-bold tracking-tight">
+              {currentSection ? currentSection.title : "Loading…"}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <div
+              className={[
+                "text-lg font-mono font-bold",
+                typingStage === "running"
+                  ? "text-rose-600 dark:text-rose-400"
+                  : "text-slate-500 dark:text-slate-300",
+              ].join(" ")}
+            >
+              {timerText}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+          <aside className="card p-5 dark:card-dark">
+            <div className="text-xs font-semibold text-slate-500">Sections</div>
+            <div className="mt-4 grid gap-2">
+              {sections.map((s, idx) => {
+                const active = idx === sectionIndex;
+                const slug = (s.slug ?? "").toLowerCase();
+                const title = (s.title ?? "").toLowerCase();
+                const isTyping = slug.includes("typing") || title.includes("typing");
+                const qs = questionsBySection[s.id] ?? [];
+                const done = isTyping
+                  ? typingCompleted
+                  : qs.length === 0
+                    ? true
+                    : qs.every((q) => answeredQuestionIds.has(q.id));
+                const icon = done ? (
+                  <CircleCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                ) : active ? (
+                  <CircleDashed className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
+                ) : (
+                  <CircleDashed className="h-4 w-4 text-slate-400" />
+                );
+
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => goToSection(idx)}
+                    className={[
+                      "flex w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm transition hover:border-slate-300 dark:hover:border-white/20",
+                      active
+                        ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/10"
+                        : "border-slate-200 bg-white dark:border-white/10 dark:bg-white/5",
+                    ].join(" ")}
+                  >
+                    {icon}
+                    <div className="flex-1">
+                      <div className="font-semibold">{s.title}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+
+          <section className="card p-7 dark:card-dark">
+            <div className="flex flex-col gap-2">
               <div className="pill w-fit">Typing Test</div>
               <h1 className="text-2xl font-bold tracking-tight">Typing speed & accuracy</h1>
               <p className="text-sm text-slate-600 dark:text-slate-300">
                 The timer starts when you press any key.
               </p>
-            </div>
-            <div className="flex flex-col items-end gap-1">
-              <div
-                className={[
-                  "text-2xl font-mono font-bold",
-                  typingStage === "running"
-                    ? "text-rose-600 dark:text-rose-400"
-                    : "text-slate-500 dark:text-slate-300",
-                ].join(" ")}
-              >
-                {timerText}
-              </div>
               {typingStage === "saving" && (
                 <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1163,80 +1318,80 @@ export default function AssessmentRunner({ attemptId }: Props) {
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="mt-6 grid gap-4">
-            <div
-              className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 whitespace-pre-wrap leading-7 select-none"
-              onCopy={(e) => e.preventDefault()}
-              onContextMenu={(e) => e.preventDefault()}
-            >
-              {typingParagraph ? typingParagraph.text : "Loading…"}
-            </div>
+            <div className="mt-6 grid gap-4">
+              <div
+                className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 whitespace-pre-wrap leading-7 select-none"
+                onCopy={(e) => e.preventDefault()}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {typingParagraph ? typingParagraph.text : "Loading…"}
+              </div>
 
-            <textarea
-              className="min-h-[180px] w-full rounded-2xl border border-slate-200 bg-white p-4 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/5 dark:text-slate-100"
-              value={typingInput}
-              onChange={(e) => setTypingInput(e.target.value)}
-              onPaste={(e) => e.preventDefault()}
-              onDrop={(e) => e.preventDefault()}
-              onKeyDown={() => {
-                if (typingStage !== "idle") return;
-                const now = Date.now();
-                setTypingStartedAtMs(now);
-                setTypingTimeLeft(60);
-                setTypingStage("running");
-                typingAutoFinishRef.current = false;
-                if (!supabase || !typingParagraph) return;
-                void supabase
-                  .from("typing_test_results")
-                  .upsert(
-                    {
-                      attempt_id: attemptId,
-                      paragraph_id: typingParagraph.id,
-                      started_at: new Date(now).toISOString(),
-                    },
-                    { onConflict: "attempt_id" },
-                  );
-              }}
-              disabled={typingStage === "saving" || typingStage === "done"}
-              placeholder="Start typing here…"
-            />
+              <textarea
+                className="min-h-[180px] w-full rounded-2xl border border-slate-200 bg-white p-4 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/5 dark:text-slate-100"
+                value={typingInput}
+                onChange={(e) => setTypingInput(e.target.value)}
+                onPaste={(e) => e.preventDefault()}
+                onDrop={(e) => e.preventDefault()}
+                onKeyDown={() => {
+                  if (typingStage !== "idle") return;
+                  const now = Date.now();
+                  setTypingStartedAtMs(now);
+                  setTypingTimeLeft(60);
+                  setTypingStage("running");
+                  typingAutoFinishRef.current = false;
+                  if (!supabase || !typingParagraph) return;
+                  void supabase
+                    .from("typing_test_results")
+                    .upsert(
+                      {
+                        attempt_id: attemptId,
+                        paragraph_id: typingParagraph.id,
+                        started_at: new Date(now).toISOString(),
+                      },
+                      { onConflict: "attempt_id" },
+                    );
+                }}
+                disabled={typingStage === "saving" || typingStage === "done"}
+                placeholder="Start typing here…"
+              />
 
-            {typingStage === "done" && typingSummary && (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/5">
-                  <div className="text-xs font-semibold text-slate-500">WPM</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{typingSummary.wpm}</div>
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/5">
-                  <div className="text-xs font-semibold text-slate-500">Accuracy</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">
-                    {typingSummary.accuracy}%
+              {typingStage === "done" && typingSummary && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/5">
+                    <div className="text-xs font-semibold text-slate-500">WPM</div>
+                    <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{typingSummary.wpm}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/5">
+                    <div className="text-xs font-semibold text-slate-500">Accuracy</div>
+                    <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">
+                      {typingSummary.accuracy}%
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <div className="flex items-center justify-between gap-3">
-              <button
-                className="btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                type="button"
-                onClick={skipTypingTest}
-                disabled={typingStage === "saving" || typingStage === "done"}
-              >
-                Skip typing test
-              </button>
-              <button
-                className="btn btn-primary h-11 disabled:cursor-not-allowed disabled:opacity-60"
-                type="button"
-                onClick={continueToEnglish}
-                disabled={typingStage !== "done"}
-              >
-                Continue to English <ChevronRight className="h-4 w-4" />
-              </button>
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  className="btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  type="button"
+                  onClick={skipTypingTest}
+                  disabled={typingStage === "saving" || typingStage === "done"}
+                >
+                  Skip typing test
+                </button>
+                <button
+                  className="btn btn-primary h-11 disabled:cursor-not-allowed disabled:opacity-60"
+                  type="button"
+                  onClick={continueToEnglish}
+                  disabled={typingStage !== "done"}
+                >
+                  Continue <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-          </div>
+          </section>
         </div>
 
         {showBackModal && (
@@ -1334,6 +1489,147 @@ export default function AssessmentRunner({ attemptId }: Props) {
     );
   }
 
+  if (step.type === "review") {
+    const incompleteSections = sections
+      .map((s, idx) => {
+        const slug = (s.slug ?? "").toLowerCase();
+        const title = (s.title ?? "").toLowerCase();
+        const isTyping = slug.includes("typing") || title.includes("typing");
+        const qs = questionsBySection[s.id] ?? [];
+        const done = isTyping
+          ? typingCompleted
+          : qs.length === 0
+            ? true
+            : qs.every((q) => answeredQuestionIds.has(q.id));
+
+        const remaining =
+          isTyping || qs.length === 0 ? 0 : qs.filter((q) => !answeredQuestionIds.has(q.id)).length;
+
+        return { s, idx, done, remaining };
+      })
+      .filter((x) => !x.done);
+
+    const canSubmit = incompleteSections.length === 0;
+    const nextIncomplete = incompleteSections[0] ?? null;
+
+    return (
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 py-10">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex flex-col gap-1">
+            <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+              Assessment
+            </div>
+            <div className="text-lg font-bold tracking-tight">Review & submit</div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+          <aside className="card p-5 dark:card-dark">
+            <div className="text-xs font-semibold text-slate-500">Sections</div>
+            <div className="mt-4 grid gap-2">
+              {sections.map((s, idx) => {
+                const active = idx === sectionIndex;
+                const slug = (s.slug ?? "").toLowerCase();
+                const title = (s.title ?? "").toLowerCase();
+                const isTyping = slug.includes("typing") || title.includes("typing");
+                const qs = questionsBySection[s.id] ?? [];
+                const done = isTyping
+                  ? typingCompleted
+                  : qs.length === 0
+                    ? true
+                    : qs.every((q) => answeredQuestionIds.has(q.id));
+                const icon = done ? (
+                  <CircleCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                ) : active ? (
+                  <CircleDashed className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
+                ) : (
+                  <CircleDashed className="h-4 w-4 text-slate-400" />
+                );
+
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => goToSection(idx)}
+                    className={[
+                      "flex w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm transition hover:border-slate-300 dark:hover:border-white/20",
+                      active
+                        ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/10"
+                        : "border-slate-200 bg-white dark:border-white/10 dark:bg-white/5",
+                    ].join(" ")}
+                  >
+                    {icon}
+                    <div className="flex-1">
+                      <div className="font-semibold">{s.title}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+
+          <section className="card p-7 dark:card-dark">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-2">
+                <div className="pill w-fit">Review</div>
+                <h1 className="text-2xl font-bold tracking-tight">Complete skipped sections</h1>
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  Some sections are still incomplete. Click any section on the left to continue.
+                </p>
+              </div>
+            </div>
+
+            {incompleteSections.length > 0 ? (
+              <div className="mt-6 grid gap-3">
+                {incompleteSections.map(({ s, idx, remaining }) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => goToSection(idx)}
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
+                  >
+                    <div className="font-semibold">{s.title}</div>
+                    {remaining > 0 && (
+                      <div className="text-xs font-semibold text-slate-500">
+                        {remaining} remaining
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
+                All sections are complete. You can submit now.
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={!nextIncomplete}
+                onClick={() => {
+                  if (!nextIncomplete) return;
+                  goToSection(nextIncomplete.idx);
+                }}
+              >
+                Go to next incomplete
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canSubmit || isSaving}
+                onClick={() => void finishAssessment()}
+              >
+                Submit
+              </button>
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 py-10">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -1363,7 +1659,15 @@ export default function AssessmentRunner({ attemptId }: Props) {
           <div className="mt-4 grid gap-2">
             {sections.map((s, idx) => {
               const active = idx === sectionIndex;
-              const done = idx < sectionIndex;
+              const slug = (s.slug ?? "").toLowerCase();
+              const title = (s.title ?? "").toLowerCase();
+              const isTyping = slug.includes("typing") || title.includes("typing");
+              const qs = questionsBySection[s.id] ?? [];
+              const done = isTyping
+                ? typingCompleted
+                : qs.length === 0
+                  ? true
+                  : qs.every((q) => answeredQuestionIds.has(q.id));
               const icon = done ? (
                 <CircleCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
               ) : active ? (
@@ -1373,10 +1677,12 @@ export default function AssessmentRunner({ attemptId }: Props) {
               );
 
               return (
-                <div
+                <button
                   key={s.id}
+                  type="button"
+                  onClick={() => goToSection(idx)}
                   className={[
-                    "flex items-center gap-3 rounded-xl border px-3 py-2 text-sm",
+                    "flex w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm transition hover:border-slate-300 dark:hover:border-white/20",
                     active
                       ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/10"
                       : "border-slate-200 bg-white dark:border-white/10 dark:bg-white/5",
@@ -1386,7 +1692,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
                   <div className="flex-1">
                     <div className="font-semibold">{s.title}</div>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
