@@ -76,8 +76,8 @@ export default async function Home() {
               </h1>
               <p className="max-w-2xl text-slate-600 dark:text-slate-300">
                 Candidates complete the full assessment in one flow. You get a
-                consistent score breakdown by section with all answers stored in
-                Supabase.
+                consistent score breakdown by section, with all answers saved
+                securely in the assessment system.
               </p>
             </div>
           </div>

@@ -35,17 +35,14 @@ export default function AppHeader() {
       <Link href="/" onClick={handleLogoClick} className="flex items-center gap-3">
         <Image
           src={TEMPO_LOGO_URL}
-          alt="Tempo logo"
+          alt="Qualify logo"
           width={44}
           height={44}
           className="h-11 w-11 rounded-2xl object-cover shadow-card"
           priority
         />
         <div className="leading-tight">
-          <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-            Tempo
-          </div>
-          <div className="text-lg font-bold tracking-tight">Hiring Assessment</div>
+          <div className="text-lg font-bold tracking-tight">Qualify</div>
         </div>
       </Link>
       <div className="flex items-center gap-4">
@@ -72,4 +69,3 @@ export default function AppHeader() {
     </>
   );
 }
-

@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Tempo Hiring Assessment",
-  description: "Candidate assessment for hiring and scoring",
+  title: "Qualify",
+  description: "Candidate assessment and scoring",
   icons: {
     icon: [
       {

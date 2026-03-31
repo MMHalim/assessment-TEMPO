@@ -13,6 +13,7 @@ import {
   CircleCheck,
   CircleDashed,
   Loader2,
+  XCircle,
 } from "lucide-react";
 
 type Props = {
@@ -23,7 +24,7 @@ type Step =
   | { type: "loading" }
   | { type: "error"; message: string }
   | { type: "typing" }
-  | { type: "review" }
+  | { type: "menu" }
   | { type: "ready" }
   | { type: "done"; totalScore: number; maxScore: number };
 
@@ -46,6 +47,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const [step, setStep] = useState<Step>({ type: "loading" });
   const hasAutoAdvancedOnTimeUpRef = useRef(false);
   const typingAutoFinishRef = useRef(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioUnlockedRef = useRef(false);
+  const lastCheatToneAtRef = useRef<number>(0);
 
   const [sections, setSections] = useState<AssessmentSection[]>([]);
   const [questionsBySection, setQuestionsBySection] = useState<
@@ -54,6 +58,12 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const [answeredQuestionIds, setAnsweredQuestionIds] = useState<Set<string>>(
     () => new Set<string>(),
   );
+  const [skippedSectionIds, setSkippedSectionIds] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
+  const [menuSectionIndex, setMenuSectionIndex] = useState(0);
+  const [showSwitchModal, setShowSwitchModal] = useState(false);
+  const [pendingSwitchIndex, setPendingSwitchIndex] = useState<number | null>(null);
 
   const [sectionIndex, setSectionIndex] = useState(0);
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -98,6 +108,134 @@ export default function AssessmentRunner({ attemptId }: Props) {
     : [];
   const currentQuestion = currentQuestions[questionIndex] ?? null;
   const isSpokenQuestion = currentQuestion?.question_type === "spoken";
+
+  const isAssessmentActive = step.type === "ready" || step.type === "typing";
+
+  const unlockAudio = useCallback(async () => {
+    if (!isAssessmentActive) return;
+    if (audioUnlockedRef.current) return;
+    const w = window as unknown as {
+      AudioContext?: new () => AudioContext;
+      webkitAudioContext?: new () => AudioContext;
+    };
+    const Ctor = w.AudioContext ?? w.webkitAudioContext;
+    if (!Ctor) return;
+    try {
+      const ctx = audioCtxRef.current ?? new Ctor();
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+      const gain = ctx.createGain();
+      gain.gain.value = 0.00001;
+      gain.connect(ctx.destination);
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      osc.connect(gain);
+      const now = ctx.currentTime;
+      osc.start(now);
+      osc.stop(now + 0.03);
+      audioUnlockedRef.current = true;
+    } catch {
+    }
+  }, [isAssessmentActive]);
+
+  const playCheatWarningTone = useCallback(async () => {
+    if (!isAssessmentActive) return;
+    const nowMs = Date.now();
+    if (nowMs - lastCheatToneAtRef.current < 2500) return;
+    lastCheatToneAtRef.current = nowMs;
+
+    const w = window as unknown as {
+      AudioContext?: new () => AudioContext;
+      webkitAudioContext?: new () => AudioContext;
+    };
+    const Ctor = w.AudioContext ?? w.webkitAudioContext;
+    if (!Ctor) return;
+
+    try {
+      const ctx = audioCtxRef.current ?? new Ctor();
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -8;
+      compressor.knee.value = 20;
+      compressor.ratio.value = 12;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.12;
+      compressor.connect(ctx.destination);
+
+      const gain = ctx.createGain();
+      gain.gain.value = 5;
+      gain.connect(compressor);
+
+      const now = ctx.currentTime;
+      const osc1 = ctx.createOscillator();
+      osc1.type = "sine";
+      osc1.frequency.setValueAtTime(880, now);
+      osc1.connect(gain);
+
+      const osc2 = ctx.createOscillator();
+      osc2.type = "square";
+      osc2.frequency.setValueAtTime(1760, now);
+      osc2.connect(gain);
+
+      const baseGain = 5;
+      const beepOn = 0.55;
+      const gap = 0.18;
+      const beepCount = 3;
+      const total = beepCount * beepOn + (beepCount - 1) * gap;
+
+      gain.gain.setValueAtTime(0.0001, now);
+      for (let i = 0; i < beepCount; i++) {
+        const start = now + i * (beepOn + gap);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(baseGain, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + beepOn);
+      }
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + total + 0.05);
+      osc2.stop(now + total + 0.05);
+    } catch {
+    }
+  }, [isAssessmentActive]);
+
+  useEffect(() => {
+    if (!isAssessmentActive) return;
+    if (audioUnlockedRef.current) return;
+    const handler = () => void unlockAudio();
+    window.addEventListener("pointerdown", handler, true);
+    window.addEventListener("keydown", handler, true);
+    return () => {
+      window.removeEventListener("pointerdown", handler, true);
+      window.removeEventListener("keydown", handler, true);
+    };
+  }, [isAssessmentActive, unlockAudio]);
+
+  useEffect(() => {
+    if (!isAssessmentActive) return;
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        void playCheatWarningTone();
+      }
+    };
+    const onBlur = () => {
+      void playCheatWarningTone();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [isAssessmentActive, playCheatWarningTone]);
 
   // Save current progress to local storage
   useEffect(() => {
@@ -186,56 +324,95 @@ export default function AssessmentRunner({ attemptId }: Props) {
     }
   }, [attemptId, sections, questionsBySection, supabase]);
 
-  const findFirstIncomplete = useCallback(
-    (answered: Set<string>) => {
-      for (let si = 0; si < sections.length; si++) {
-        const s = sections[si];
-        const slug = (s?.slug ?? "").toLowerCase();
-        const title = (s?.title ?? "").toLowerCase();
-        const isTyping = slug.includes("typing") || title.includes("typing");
-        if (isTyping) {
-          if (!typingCompleted) return { sectionIndex: si, questionIndex: 0, step: "typing" as const };
-          continue;
+  const persistSkipped = useCallback(
+    (next: Set<string>) => {
+      sessionStorage.setItem(`assessment_skipped_${attemptId}`, JSON.stringify(Array.from(next)));
+    },
+    [attemptId],
+  );
+
+  const markSectionSkipped = useCallback(
+    async (sectionId: string) => {
+      if (!supabase) return;
+      if (skippedSectionIds.has(sectionId)) return;
+
+      const qs = questionsBySection[sectionId] ?? [];
+      const ids = qs.map((q) => q.id);
+
+      if (ids.length > 0) {
+        const { data: existingRows, error: existingError } = await supabase
+          .from("assessment_attempt_answers")
+          .select("question_id")
+          .eq("attempt_id", attemptId)
+          .in("question_id", ids);
+        if (existingError) throw existingError;
+
+        const existing = new Set<string>(
+          (existingRows ?? []).map((r) =>
+            String((r as { question_id?: unknown }).question_id ?? ""),
+          ),
+        );
+        const missing = ids.filter((id) => !existing.has(id));
+        if (missing.length > 0) {
+          const rows = missing.map((qid) => ({
+            attempt_id: attemptId,
+            question_id: qid,
+            selected_choice: null,
+            score_awarded: 0,
+          }));
+
+          const { error: upsertError } = await supabase
+            .from("assessment_attempt_answers")
+            .upsert(rows, { onConflict: "attempt_id,question_id" });
+          if (upsertError) throw upsertError;
         }
-        const qs = questionsBySection[s.id] ?? [];
-        if (qs.length === 0) continue;
-        const qi = qs.findIndex((q) => !answered.has(q.id));
-        if (qi !== -1) return { sectionIndex: si, questionIndex: qi, step: "ready" as const };
+      }
+
+      const next = new Set(skippedSectionIds);
+      next.add(sectionId);
+      setSkippedSectionIds(next);
+      persistSkipped(next);
+    },
+    [attemptId, persistSkipped, questionsBySection, skippedSectionIds, supabase],
+  );
+
+  const isSectionDone = useCallback(
+    (s: AssessmentSection) => {
+      if (skippedSectionIds.has(s.id)) return true;
+      const slug = (s.slug ?? "").toLowerCase();
+      const title = (s.title ?? "").toLowerCase();
+      const isTyping = slug.includes("typing") || title.includes("typing");
+      if (isTyping) return typingCompleted;
+      const qs = questionsBySection[s.id] ?? [];
+      if (qs.length === 0) return true;
+      return qs.every((q) => answeredQuestionIds.has(q.id));
+    },
+    [answeredQuestionIds, questionsBySection, skippedSectionIds, typingCompleted],
+  );
+
+  const nextUnfinishedSectionIndex = useCallback(
+    (startFrom: number) => {
+      for (let i = Math.min(startFrom, sections.length - 1); i < sections.length; i++) {
+        const s = sections[i];
+        if (!s) continue;
+        if (isSectionDone(s)) continue;
+        return i;
       }
       return null;
     },
-    [questionsBySection, sections, typingCompleted],
+    [isSectionDone, sections],
   );
 
-  const advanceToNextSectionOrReview = useCallback(async () => {
-    const isLastSection = sectionIndex + 1 >= sections.length;
-    if (!isLastSection) {
-      const nextSectionIndex = sectionIndex + 1;
-      setSectionIndex(nextSectionIndex);
-      setQuestionIndex(0);
+  const goToMenu = useCallback(
+    (preferredIndex: number | null) => {
+      const nextIdx = nextUnfinishedSectionIndex(preferredIndex ?? 0);
+      setMenuSectionIndex(nextIdx ?? 0);
       setSelectedChoice(null);
       setTimeLeft(null);
-      hasAutoAdvancedOnTimeUpRef.current = false;
-
-      const nextSectionTimeLimit = sections[nextSectionIndex]?.time_limit_seconds || 600;
-      const stateToSave = {
-        sectionIndex: nextSectionIndex,
-        questionIndex: 0,
-        timeLeft: nextSectionTimeLimit,
-        lastUpdated: Date.now(),
-      };
-      sessionStorage.setItem(`assessment_state_${attemptId}`, JSON.stringify(stateToSave));
-      return;
-    }
-
-    const firstIncomplete = findFirstIncomplete(answeredQuestionIds);
-    if (firstIncomplete) {
-      setStep({ type: "review" });
-      return;
-    }
-
-    await finishAssessment();
-  }, [attemptId, answeredQuestionIds, findFirstIncomplete, finishAssessment, sectionIndex, sections]);
+      setStep({ type: "menu" });
+    },
+    [nextUnfinishedSectionIndex],
+  );
 
   // Handle countdown timer
   useEffect(() => {
@@ -263,8 +440,16 @@ export default function AssessmentRunner({ attemptId }: Props) {
     }
     if (hasAutoAdvancedOnTimeUpRef.current) return;
     hasAutoAdvancedOnTimeUpRef.current = true;
-    void advanceToNextSectionOrReview();
-  }, [advanceToNextSectionOrReview, step.type, timeLeft]);
+    if (!currentSection) return;
+    setIsSaving(true);
+    void markSectionSkipped(currentSection.id)
+      .then(() => goToMenu(sectionIndex + 1))
+      .catch((e) => {
+        const message = e instanceof Error ? e.message : "Failed to skip section.";
+        setStep({ type: "error", message });
+      })
+      .finally(() => setIsSaving(false));
+  }, [currentSection, goToMenu, markSectionSkipped, sectionIndex, step.type, timeLeft]);
 
   // Disable back button and show warning modal
   useEffect(() => {
@@ -301,7 +486,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
     if (!supabase) {
       setStep({
         type: "error",
-        message: "App is not configured yet. Missing Supabase environment.",
+        message: "The system is not configured yet. Please contact the administrator.",
       });
       return;
     }
@@ -423,10 +608,30 @@ export default function AssessmentRunner({ attemptId }: Props) {
       );
       setAnsweredQuestionIds(answered);
 
+      let skipped = new Set<string>();
+      const skippedStr = sessionStorage.getItem(`assessment_skipped_${attemptId}`);
+      if (skippedStr) {
+        try {
+          const raw = JSON.parse(skippedStr);
+          if (Array.isArray(raw)) {
+            skipped = new Set(raw.map((v) => String(v)));
+          }
+        } catch {
+        }
+      }
+      setSkippedSectionIds(skipped);
+
       if (!restoredFromSession) {
         let found = false;
         for (let si = 0; si < sortedSections.length; si++) {
           const section = sortedSections[si] as AssessmentSection;
+          if (skipped.has(section.id)) continue;
+          if (isTypingSection(section)) {
+            found = true;
+            startSectionIndex = si;
+            startQuestionIndex = 0;
+            break;
+          }
           const qs = map[section.id] ?? [];
           const qi = qs.findIndex((q) => !answered.has(q.id));
           if (qi !== -1) {
@@ -463,9 +668,10 @@ export default function AssessmentRunner({ attemptId }: Props) {
         .maybeSingle();
       if (typingRowError) throw typingRowError;
 
-      setTypingCompleted(Boolean(typingRow?.completed_at));
+      const typingDone = Boolean(typingRow?.completed_at);
+      setTypingCompleted(typingDone);
 
-      if (!typingRow?.completed_at) {
+      if (!typingDone) {
         const typingIdx = sortedSections.findIndex((s) => {
           const slug = (s.slug ?? "").toLowerCase();
           const title = (s.title ?? "").toLowerCase();
@@ -479,7 +685,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
         }
       }
 
-      if (!typingRow?.completed_at) {
+      if (!typingDone) {
         let paragraphId = typingRow?.paragraph_id ? String(typingRow.paragraph_id) : "";
         if (!paragraphId) {
           const { data: paragraphs, error: paragraphsError } = await supabase
@@ -546,7 +752,29 @@ export default function AssessmentRunner({ attemptId }: Props) {
         setTypingSummary(null);
       }
 
-      setStep({ type: "ready" });
+      const isSectionDoneLocal = (s: AssessmentSection) => {
+        if (skipped.has(s.id)) return true;
+        if (isTypingSection(s)) return typingDone;
+        const qs = map[s.id] ?? [];
+        if (qs.length === 0) return true;
+        return qs.every((q) => answered.has(q.id));
+      };
+
+      let initialMenuIndex = startSectionIndex;
+      const startSection = sortedSections[initialMenuIndex] as AssessmentSection | undefined;
+      if (!startSection || isSectionDoneLocal(startSection)) {
+        initialMenuIndex = 0;
+        for (let si = 0; si < sortedSections.length; si++) {
+          const s = sortedSections[si] as AssessmentSection;
+          if (!isSectionDoneLocal(s)) {
+            initialMenuIndex = si;
+            break;
+          }
+        }
+      }
+
+      setMenuSectionIndex(initialMenuIndex);
+      setStep({ type: "menu" });
     } catch (e: unknown) {
       console.error("Assessment load error:", e);
       const rawMessage =
@@ -563,14 +791,14 @@ export default function AssessmentRunner({ attemptId }: Props) {
         setStep({
           type: "error",
           message:
-            "Typing test tables are missing in Supabase. Create public.typing_paragraphs and public.typing_test_results, then reload.",
+            "Typing test is not configured yet. Please contact the administrator.",
         });
         return;
       }
 
       setStep({ type: "error", message: `Error loading: ${rawMessage}` });
     }
-  }, [supabase, attemptId]);
+  }, [attemptId, isTypingSection, supabase]);
 
   useEffect(() => {
     setSupabase(getSupabaseBrowserClient());
@@ -600,8 +828,8 @@ export default function AssessmentRunner({ attemptId }: Props) {
     if (!currentSection) return;
     if (currentQuestions.length > 0) return;
     if (isTypingSection(currentSection)) return;
-    void advanceToNextSectionOrReview();
-  }, [advanceToNextSectionOrReview, currentQuestions.length, currentSection, isTypingSection, step.type]);
+    goToMenu(sectionIndex + 1);
+  }, [currentQuestions.length, currentSection, goToMenu, isTypingSection, sectionIndex, step.type]);
 
   const computeTypingSummary = useCallback((source: string, typed: string) => {
     const s = source ?? "";
@@ -935,31 +1163,25 @@ export default function AssessmentRunner({ attemptId }: Props) {
   }, [finishTyping, step.type, typingStage, typingTimeLeft]);
 
   const continueToEnglish = useCallback(() => {
-    if (isTypingSection(currentSection)) {
-      setSectionIndex((v) => {
-        const next = v + 1;
-        if (next >= sections.length) return v;
-        return next;
-      });
-      setQuestionIndex(0);
-      setSelectedChoice(null);
-    }
-    setTimeLeft(null);
-    setStep({ type: "ready" });
-  }, [currentSection, isTypingSection, sections.length]);
+    if (!currentSection) return;
+    goToMenu(sectionIndex + 1);
+  }, [currentSection, goToMenu, sectionIndex]);
 
   const skipCurrentSection = useCallback(async () => {
     if (step.type !== "ready") return;
     setIsSaving(true);
     try {
-      await advanceToNextSectionOrReview();
+      if (!currentSection) return;
+      await markSectionSkipped(currentSection.id);
+      sessionStorage.removeItem(`assessment_state_${attemptId}`);
+      goToMenu(sectionIndex + 1);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to skip section.";
       setStep({ type: "error", message });
     } finally {
       setIsSaving(false);
     }
-  }, [advanceToNextSectionOrReview, step.type]);
+  }, [attemptId, currentSection, goToMenu, markSectionSkipped, sectionIndex, step.type]);
 
   const skipTypingTest = useCallback(async () => {
     if (step.type !== "typing") return;
@@ -990,6 +1212,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
       setStep({ type: "error", message: `Failed to save typing result: ${error.message}` });
       return;
     }
+    if (currentSection) {
+      await markSectionSkipped(currentSection.id);
+    }
     setTypingTimeLeft(0);
     setTypingSummary({
       wpm: 0,
@@ -1001,7 +1226,16 @@ export default function AssessmentRunner({ attemptId }: Props) {
     });
     setTypingCompleted(true);
     setTypingStage("done");
-  }, [attemptId, step.type, supabase, typingParagraph, typingStage, typingStartedAtMs]);
+  }, [
+    attemptId,
+    currentSection,
+    markSectionSkipped,
+    step.type,
+    supabase,
+    typingParagraph,
+    typingStage,
+    typingStartedAtMs,
+  ]);
 
   const normalizeTypingText = useCallback((t: string) => {
     return (t ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trimEnd();
@@ -1027,7 +1261,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
       if (!supabase) {
         setStep({
           type: "error",
-          message: "App is not configured yet. Missing Supabase environment.",
+          message: "The system is not configured yet. Please contact the administrator.",
         });
         return;
       }
@@ -1059,25 +1293,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
           setIsSaving(false);
           return;
         }
-
-        const isLastSection = sectionIndex + 1 >= sections.length;
-        if (!isLastSection) {
-          setSectionIndex((v) => v + 1);
-          setQuestionIndex(0);
-          setSelectedChoice(null);
-          setTimeLeft(null);
-          setIsSaving(false);
-          return;
-        }
-
-        const firstIncomplete = findFirstIncomplete(nextAnswered);
-        if (firstIncomplete) {
-          setStep({ type: "review" });
-          setIsSaving(false);
-          return;
-        }
-
-        await finishAssessment();
+        sessionStorage.removeItem(`assessment_state_${attemptId}`);
+        goToMenu(sectionIndex + 1);
+        setIsSaving(false);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to save your answer.";
         setStep({ type: "error", message });
@@ -1089,12 +1307,10 @@ export default function AssessmentRunner({ attemptId }: Props) {
       currentQuestion,
       currentQuestions.length,
       currentSection,
-      finishAssessment,
       questionIndex,
       answeredQuestionIds,
-      findFirstIncomplete,
+      goToMenu,
       sectionIndex,
-      sections.length,
       supabase,
     ],
   );
@@ -1105,7 +1321,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
     if (!supabase) {
       setStep({
         type: "error",
-        message: "App is not configured yet. Missing Supabase environment.",
+        message: "The system is not configured yet. Please contact the administrator.",
       });
       return;
     }
@@ -1148,25 +1364,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
         setIsSaving(false);
         return;
       }
-
-      const isLastSection = sectionIndex + 1 >= sections.length;
-      if (!isLastSection) {
-        setSectionIndex((v) => v + 1);
-        setQuestionIndex(0);
-        setSelectedChoice(null);
-        setTimeLeft(null); // Reset timer for the next section
-        setIsSaving(false);
-        return;
-      }
-
-      const firstIncomplete = findFirstIncomplete(nextAnswered);
-      if (firstIncomplete) {
-        setStep({ type: "review" });
-        setIsSaving(false);
-        return;
-      }
-
-      await finishAssessment();
+      sessionStorage.removeItem(`assessment_state_${attemptId}`);
+      goToMenu(sectionIndex + 1);
+      setIsSaving(false);
     } catch (e) {
       const message =
         e instanceof Error ? e.message : "Failed to save your answer.";
@@ -1175,14 +1375,42 @@ export default function AssessmentRunner({ attemptId }: Props) {
     }
   }
 
-  const goToSection = useCallback(
+  const startSectionAtIndex = useCallback(
     (targetIndex: number) => {
       const target = sections[targetIndex];
       if (!target) return;
+      if (skippedSectionIds.has(target.id)) return;
 
+      const slug = (target.slug ?? "").toLowerCase();
+      const title = (target.title ?? "").toLowerCase();
+      const isTyping = slug.includes("typing") || title.includes("typing");
+      if (isTyping && typingCompleted) return;
+
+      let nextQuestionIndex = 0;
       const qs = questionsBySection[target.id] ?? [];
-      const firstUnansweredIndex = qs.findIndex((q) => !answeredQuestionIds.has(q.id));
-      const nextQuestionIndex = firstUnansweredIndex === -1 ? 0 : firstUnansweredIndex;
+      if (!isTyping && qs.length > 0) {
+        const savedStateStr = sessionStorage.getItem(`assessment_state_${attemptId}`);
+        if (savedStateStr) {
+          try {
+            const savedState = JSON.parse(savedStateStr) as {
+              sectionIndex?: number;
+              questionIndex?: number;
+            };
+            if (savedState.sectionIndex === targetIndex && typeof savedState.questionIndex === "number") {
+              nextQuestionIndex = Math.max(0, Math.min(savedState.questionIndex, qs.length - 1));
+            } else {
+              const firstUnansweredIndex = qs.findIndex((q) => !answeredQuestionIds.has(q.id));
+              nextQuestionIndex = firstUnansweredIndex === -1 ? 0 : firstUnansweredIndex;
+            }
+          } catch {
+            const firstUnansweredIndex = qs.findIndex((q) => !answeredQuestionIds.has(q.id));
+            nextQuestionIndex = firstUnansweredIndex === -1 ? 0 : firstUnansweredIndex;
+          }
+        } else {
+          const firstUnansweredIndex = qs.findIndex((q) => !answeredQuestionIds.has(q.id));
+          nextQuestionIndex = firstUnansweredIndex === -1 ? 0 : firstUnansweredIndex;
+        }
+      }
 
       setSectionIndex(targetIndex);
       setQuestionIndex(nextQuestionIndex);
@@ -1190,7 +1418,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
       setTimeLeft(null);
       hasAutoAdvancedOnTimeUpRef.current = false;
 
-      const nextSectionTimeLimit = target.time_limit_seconds || 600;
+      const nextSectionTimeLimit = isTyping ? 60 : target.time_limit_seconds || 600;
       const stateToSave = {
         sectionIndex: targetIndex,
         questionIndex: nextQuestionIndex,
@@ -1199,7 +1427,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
       };
       sessionStorage.setItem(`assessment_state_${attemptId}`, JSON.stringify(stateToSave));
 
-      if (isTypingSection(target) && !typingCompleted) {
+      if (isTyping) {
         setTypingInput("");
         setTypingStartedAtMs(null);
         setTypingTimeLeft(60);
@@ -1211,8 +1439,70 @@ export default function AssessmentRunner({ attemptId }: Props) {
 
       setStep({ type: "ready" });
     },
-    [answeredQuestionIds, attemptId, isTypingSection, questionsBySection, sections, typingCompleted],
+    [
+      answeredQuestionIds,
+      attemptId,
+      questionsBySection,
+      sections,
+      skippedSectionIds,
+      typingCompleted,
+    ],
   );
+
+  const handleSectionClick = useCallback(
+    (targetIndex: number) => {
+      const target = sections[targetIndex];
+      if (!target) return;
+      if (skippedSectionIds.has(target.id)) return;
+      if (isSectionDone(target)) return;
+      if (step.type === "menu") {
+        setMenuSectionIndex(targetIndex);
+        return;
+      }
+      if (targetIndex === sectionIndex) return;
+      setPendingSwitchIndex(targetIndex);
+      setShowSwitchModal(true);
+    },
+    [isSectionDone, sectionIndex, sections, skippedSectionIds, step.type],
+  );
+
+  const confirmLeaveToSection = useCallback(async () => {
+    if (pendingSwitchIndex === null) return;
+    const targetIndex = pendingSwitchIndex;
+    setShowSwitchModal(false);
+    setPendingSwitchIndex(null);
+    setIsSaving(true);
+    try {
+      if (step.type === "typing" && !typingCompleted) {
+        await skipTypingTest();
+        sessionStorage.removeItem(`assessment_state_${attemptId}`);
+      } else if (currentSection && !isSectionDone(currentSection)) {
+        await markSectionSkipped(currentSection.id);
+        sessionStorage.removeItem(`assessment_state_${attemptId}`);
+      }
+      startSectionAtIndex(targetIndex);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to switch assessments.";
+      setStep({ type: "error", message });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    attemptId,
+    currentSection,
+    isSectionDone,
+    markSectionSkipped,
+    pendingSwitchIndex,
+    skipTypingTest,
+    startSectionAtIndex,
+    step.type,
+    typingCompleted,
+  ]);
+
+  const cancelLeaveToSection = useCallback(() => {
+    setShowSwitchModal(false);
+    setPendingSwitchIndex(null);
+  }, []);
 
   if (step.type === "loading") {
     return (
@@ -1223,6 +1513,126 @@ export default function AssessmentRunner({ attemptId }: Props) {
             Loading assessment…
           </div>
         </div>
+      </main>
+    );
+  }
+
+  if (step.type === "menu") {
+    const allDone = sections.every((s) => isSectionDone(s));
+    const selected = sections[menuSectionIndex] ?? null;
+
+    return (
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-10">
+        <div className="flex flex-col gap-1">
+          <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+            Assessments
+          </div>
+          <div className="text-lg font-bold tracking-tight">Choose an assessment to start</div>
+        </div>
+
+        <div className="card p-5 dark:card-dark">
+          <div className="grid gap-2">
+            {sections.map((s, idx) => {
+              const active = idx === menuSectionIndex;
+              const slug = (s.slug ?? "").toLowerCase();
+              const title = (s.title ?? "").toLowerCase();
+              const isTyping = slug.includes("typing") || title.includes("typing");
+              const qs = questionsBySection[s.id] ?? [];
+              const isSkipped = skippedSectionIds.has(s.id);
+              const done = isSectionDone(s);
+              const durationSeconds = isTyping ? 60 : s.time_limit_seconds || 600;
+              const durationMinutes = Math.round(durationSeconds / 60);
+
+              const icon = isSkipped ? (
+                <XCircle className="h-4 w-4 text-rose-600 dark:text-rose-300" />
+              ) : done ? (
+                <CircleCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+              ) : active ? (
+                <CircleDashed className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
+              ) : (
+                <CircleDashed className="h-4 w-4 text-slate-400" />
+              );
+
+              return (
+                <div
+                  key={s.id}
+                  className={[
+                    "rounded-2xl border p-3",
+                    active
+                      ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/10"
+                      : "border-slate-200 bg-white dark:border-white/10 dark:bg-white/5",
+                  ].join(" ")}
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleSectionClick(idx)}
+                    className="flex w-full items-center gap-3 text-left"
+                  >
+                    {icon}
+                    <div className="flex-1">
+                      <div className="font-semibold">{s.title}</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-300">
+                        {isTyping ? "Typing test" : `${qs.length} questions`} · {durationMinutes} min
+                      </div>
+                    </div>
+                  </button>
+
+                  {active && selected && (
+                    <div className="mt-3 grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-200">
+                      <div className="grid gap-2">
+                        <div className="text-xs font-semibold text-slate-500 dark:text-slate-300">
+                          Important
+                        </div>
+                        <ul className="list-disc pl-5 space-y-1">
+                          <li>This assessment will start only when you press Start.</li>
+                          <li>
+                            Once started, you must focus on answering. If you skip it, you cannot return
+                            to it again.
+                          </li>
+                          <li>
+                            If you leave a started assessment to open another one, the current assessment
+                            will be marked as skipped and only the answers you already submitted will count.
+                          </li>
+                        </ul>
+                      </div>
+
+                      {isSkipped ? (
+                        <div className="text-sm font-semibold text-rose-600 dark:text-rose-300">
+                          This assessment was skipped and cannot be reopened.
+                        </div>
+                      ) : done ? (
+                        <div className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                          This assessment is completed.
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => startSectionAtIndex(menuSectionIndex)}
+                          className="btn btn-primary h-11 w-fit"
+                        >
+                          Start Assessment <ChevronRight className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {allDone && (
+          <div className="card p-5 dark:card-dark">
+            <div className="flex flex-col gap-3">
+              <div className="text-sm text-slate-600 dark:text-slate-300">
+                All assessments are completed or skipped.
+              </div>
+              <button type="button" onClick={() => void finishAssessment()} className="btn-primary w-fit">
+                Submit Assessment
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     );
   }
@@ -1286,7 +1696,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
                   <button
                     key={s.id}
                     type="button"
-                    onClick={() => goToSection(idx)}
+                    onClick={() => handleSectionClick(idx)}
                     className={[
                       "flex w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm transition hover:border-slate-300 dark:hover:border-white/20",
                       active
@@ -1423,6 +1833,37 @@ export default function AssessmentRunner({ attemptId }: Props) {
             </div>
           </div>
         )}
+
+        {showSwitchModal && (
+          <div className="fixed inset-0 z-[101] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl dark:border dark:border-white/10 dark:bg-slate-900">
+              <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+                Leave current assessment?
+              </h3>
+              <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                If you continue, the current assessment will be marked as skipped. You cannot return to it again. Only the answers you already submitted will count.
+              </p>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={cancelLeaveToSection}
+                  className="btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                  disabled={isSaving}
+                >
+                  Stay Here !
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmLeaveToSection()}
+                  className="btn bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isSaving}
+                >
+                  Leave
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     );
   }
@@ -1489,147 +1930,6 @@ export default function AssessmentRunner({ attemptId }: Props) {
     );
   }
 
-  if (step.type === "review") {
-    const incompleteSections = sections
-      .map((s, idx) => {
-        const slug = (s.slug ?? "").toLowerCase();
-        const title = (s.title ?? "").toLowerCase();
-        const isTyping = slug.includes("typing") || title.includes("typing");
-        const qs = questionsBySection[s.id] ?? [];
-        const done = isTyping
-          ? typingCompleted
-          : qs.length === 0
-            ? true
-            : qs.every((q) => answeredQuestionIds.has(q.id));
-
-        const remaining =
-          isTyping || qs.length === 0 ? 0 : qs.filter((q) => !answeredQuestionIds.has(q.id)).length;
-
-        return { s, idx, done, remaining };
-      })
-      .filter((x) => !x.done);
-
-    const canSubmit = incompleteSections.length === 0;
-    const nextIncomplete = incompleteSections[0] ?? null;
-
-    return (
-      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 py-10">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex flex-col gap-1">
-            <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-              Assessment
-            </div>
-            <div className="text-lg font-bold tracking-tight">Review & submit</div>
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-          <aside className="card p-5 dark:card-dark">
-            <div className="text-xs font-semibold text-slate-500">Sections</div>
-            <div className="mt-4 grid gap-2">
-              {sections.map((s, idx) => {
-                const active = idx === sectionIndex;
-                const slug = (s.slug ?? "").toLowerCase();
-                const title = (s.title ?? "").toLowerCase();
-                const isTyping = slug.includes("typing") || title.includes("typing");
-                const qs = questionsBySection[s.id] ?? [];
-                const done = isTyping
-                  ? typingCompleted
-                  : qs.length === 0
-                    ? true
-                    : qs.every((q) => answeredQuestionIds.has(q.id));
-                const icon = done ? (
-                  <CircleCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
-                ) : active ? (
-                  <CircleDashed className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
-                ) : (
-                  <CircleDashed className="h-4 w-4 text-slate-400" />
-                );
-
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => goToSection(idx)}
-                    className={[
-                      "flex w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm transition hover:border-slate-300 dark:hover:border-white/20",
-                      active
-                        ? "border-indigo-200 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/10"
-                        : "border-slate-200 bg-white dark:border-white/10 dark:bg-white/5",
-                    ].join(" ")}
-                  >
-                    {icon}
-                    <div className="flex-1">
-                      <div className="font-semibold">{s.title}</div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </aside>
-
-          <section className="card p-7 dark:card-dark">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex flex-col gap-2">
-                <div className="pill w-fit">Review</div>
-                <h1 className="text-2xl font-bold tracking-tight">Complete skipped sections</h1>
-                <p className="text-sm text-slate-600 dark:text-slate-300">
-                  Some sections are still incomplete. Click any section on the left to continue.
-                </p>
-              </div>
-            </div>
-
-            {incompleteSections.length > 0 ? (
-              <div className="mt-6 grid gap-3">
-                {incompleteSections.map(({ s, idx, remaining }) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => goToSection(idx)}
-                    className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-sm hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
-                  >
-                    <div className="font-semibold">{s.title}</div>
-                    {remaining > 0 && (
-                      <div className="text-xs font-semibold text-slate-500">
-                        {remaining} remaining
-                      </div>
-                    )}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
-                All sections are complete. You can submit now.
-              </div>
-            )}
-
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={!nextIncomplete}
-                onClick={() => {
-                  if (!nextIncomplete) return;
-                  goToSection(nextIncomplete.idx);
-                }}
-              >
-                Go to next incomplete
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={!canSubmit || isSaving}
-                onClick={() => void finishAssessment()}
-              >
-                Submit
-              </button>
-            </div>
-          </section>
-        </div>
-      </main>
-    );
-  }
-
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 py-10">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -1680,7 +1980,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
                 <button
                   key={s.id}
                   type="button"
-                  onClick={() => goToSection(idx)}
+                  onClick={() => handleSectionClick(idx)}
                   className={[
                     "flex w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm transition hover:border-slate-300 dark:hover:border-white/20",
                     active
@@ -1936,6 +2236,37 @@ export default function AssessmentRunner({ attemptId }: Props) {
                 className="btn bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
               >
                 Yes, skip
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSwitchModal && (
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl dark:border dark:border-white/10 dark:bg-slate-900">
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+              Leave current assessment?
+            </h3>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              If you continue, the current assessment will be marked as skipped. You cannot return to it again. Only the answers you already submitted will count.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelLeaveToSection}
+                className="btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                disabled={isSaving}
+              >
+                Stay Here !
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmLeaveToSection()}
+                className="btn bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSaving}
+              >
+                Leave
               </button>
             </div>
           </div>

@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   const supabase = getSupabaseServerClient();
   if (!supabase) {
     return NextResponse.json(
-      { ok: false, error: "Missing Supabase environment" },
+      { ok: false, error: "Server is not configured." },
       { status: 500 },
     );
   }

@@ -6,7 +6,7 @@ import { getSupabaseServerClient } from "@/lib/supabaseClient";
 export async function POST(request: Request) {
   const supabase = getSupabaseServerClient();
   if (!supabase) {
-    return NextResponse.json({ ok: false, error: "Missing Supabase environment" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Server is not configured." }, { status: 500 });
   }
 
   const body = (await request.json().catch(() => null)) as

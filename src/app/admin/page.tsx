@@ -572,7 +572,7 @@ export default function AdminPage() {
     
     setIsClearingQuestions(true);
     try {
-      // In Supabase, delete all rows
+      // In the database, delete all rows
       const { error } = await supabase.from("assessment_questions").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // trick to delete all
       if (error) throw error;
       
@@ -1175,7 +1175,7 @@ export default function AdminPage() {
                     <button onClick={() => setShowClearQuestionsWarning(true)} className="btn bg-rose-600 text-white hover:bg-rose-700 py-1 px-3 text-sm">Clear All</button>
                   </div>
                 </div>
-                <p className="text-sm text-slate-500">Edit question prompts below. For full choice/answer editing, use the Supabase dashboard for now.</p>
+                <p className="text-sm text-slate-500">Edit question prompts below. For full choice/answer editing, use the database dashboard for now.</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm whitespace-nowrap">
                     <thead>
