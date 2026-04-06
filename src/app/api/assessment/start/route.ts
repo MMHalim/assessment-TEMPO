@@ -40,44 +40,34 @@ export async function POST(request: Request) {
     );
   }
 
-  const attempts = [
-    { nameCol: "Name", tsCol: "Timestamp", emailCol: "Email" },
-    { nameCol: "Name", tsCol: "Timestamp", emailCol: "Email_Address" },
-    { nameCol: "name", tsCol: "timestamp", emailCol: "email" },
-    { nameCol: "name", tsCol: "timestamp", emailCol: "email_address" },
-  ] as const;
+  const { data: row, error: readError } = await supabase
+    .from("empDB")
+    .select(`"Email","Email_Address"`)
+    .eq("Name", name)
+    .eq("Timestamp", timestamp)
+    .limit(1)
+    .maybeSingle();
 
-  let matchedEmail: string | null = null;
-  for (const { nameCol, tsCol, emailCol } of attempts) {
-    const { data, error } = await supabase
-      .from("empDB")
-      .select(`${nameCol},${tsCol},${emailCol}`)
-      .eq(nameCol, name)
-      .eq(tsCol, timestamp)
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !data) continue;
-    const row = data as Record<string, unknown>;
-    const raw = pickString(row[emailCol]);
-    if (!raw) continue;
-    matchedEmail = normalizeEmail(raw);
-    break;
-  }
-
-  if (!matchedEmail) {
+  if (readError || !row) {
     return NextResponse.json(
       { ok: false, error: "Wrong email, please try again !" },
       { status: 404 },
     );
   }
 
-  if (matchedEmail !== email) {
+  const record = row as Record<string, unknown>;
+  const emailA = normalizeEmail(pickString(record["Email"]) ?? "");
+  const emailB = normalizeEmail(pickString(record["Email_Address"]) ?? "");
+
+  const matches = (emailA && emailA === email) || (emailB && emailB === email);
+  if (!matches) {
     return NextResponse.json(
       { ok: false, error: "Wrong email, please try again !" },
       { status: 403 },
     );
   }
+
+  const matchedEmail = emailA || emailB || email;
 
   const { count: completedCount, error: completedError } = await supabase
     .from("assessment_attempts")

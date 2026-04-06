@@ -11,7 +11,7 @@ export default function AdminPage() {
   const router = useRouter();
   const [authorized, setAuthorized] = useState(false);
   const [activeTab, setActiveTab] = useState<
-    "results" | "sections" | "questions" | "candidates" | "attempts" | "password" | "typing"
+    "results" | "sections" | "questions" | "candidates" | "attempts" | "reset" | "password" | "typing"
   >("results");
   const [supabase] = useState(getSupabaseBrowserClient());
 
@@ -87,6 +87,10 @@ export default function AdminPage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [deleteAttemptId, setDeleteAttemptId] = useState<string | null>(null);
+  const [resetUserEmail, setResetUserEmail] = useState("");
+  const [resetAttemptId, setResetAttemptId] = useState<string>("");
+  const [resetSectionId, setResetSectionId] = useState<string>("");
+  const [isResetting, setIsResetting] = useState(false);
   const [adminPwdInput, setAdminPwdInput] = useState("");
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
   const [authError, setAuthError] = useState("");
@@ -163,24 +167,81 @@ export default function AdminPage() {
     return Array.from(byEmail.values());
   })();
 
+  const resetAttemptBase = (() => {
+    const byEmail = new Map<string, Attempt>();
+    for (const a of attempts) {
+      const key = String(a.candidate_email || "").trim().toLowerCase();
+      if (!key) continue;
+      const existing = byEmail.get(key);
+      if (!existing) {
+        byEmail.set(key, a);
+        continue;
+      }
+      const existingT = new Date(existing.started_at).getTime();
+      const nextT = new Date(a.started_at).getTime();
+      if (nextT > existingT) byEmail.set(key, a);
+    }
+    return Array.from(byEmail.values()).sort(
+      (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime(),
+    );
+  })();
+
+  const resetAttemptByEmail = (() => {
+    const m = new Map<string, Attempt>();
+    for (const a of resetAttemptBase) {
+      const key = String(a.candidate_email || "").trim().toLowerCase();
+      if (!key) continue;
+      m.set(key, a);
+    }
+    return m;
+  })();
+
+  const resetAssessmentOptions: Array<{ id: string; title: string }> = [
+    ...sections
+      .filter((s) => {
+        const slug = String(s.slug ?? "").toLowerCase();
+        const title = String(s.title ?? "").toLowerCase();
+        return !slug.includes("typing") && !title.includes("typing");
+      })
+      .map((s) => ({ id: s.id, title: s.title })),
+    { id: "__typing__", title: "Typing Speed & Accuracy" },
+  ];
+
   const loadData = useCallback(async () => {
     setIsLoading(true);
     if (!supabase) return;
 
     try {
-      const [secRes, qRes, attRes, candRes, ansRes, typingParRes, typingRes] = await Promise.all([
+      const attemptsPromise = (async () => {
+        const pageSize = 1000;
+        const all: Attempt[] = [];
+        for (let from = 0; from < 50000; from += pageSize) {
+          const to = from + pageSize - 1;
+          const { data, error } = await supabase
+            .from("assessment_attempts")
+            .select("*")
+            .order("started_at", { ascending: false })
+            .range(from, to);
+          if (error) throw error;
+          if (data) all.push(...(data as Attempt[]));
+          if (!data || data.length < pageSize) break;
+        }
+        return all;
+      })();
+
+      const [secRes, qRes, candRes, ansRes, typingParRes, typingRes, allAttempts] = await Promise.all([
         supabase.from("assessment_sections").select("*").order("sort_order"),
         supabase.from("assessment_questions").select("*").order("sort_order"),
-        supabase.from("assessment_attempts").select("*").order("started_at", { ascending: false }),
         fetch("/api/admin/candidates").then((r) => r.json()),
         supabase.from("assessment_attempt_answers").select("*, assessment_questions(section_id, points)"),
         supabase.from("typing_paragraphs").select("*").order("created_at", { ascending: false }),
         supabase.from("typing_test_results").select("*"),
+        attemptsPromise,
       ]);
 
       if (secRes.data) setSections(secRes.data);
       if (qRes.data) setQuestions(qRes.data);
-      if (attRes.data) setAttempts(attRes.data);
+      setAttempts(allAttempts);
       if (candRes.ok) {
         setCandidates(candRes.candidates);
         setEmpDBData(
@@ -201,6 +262,52 @@ export default function AdminPage() {
       setIsLoading(false);
     }
   }, [supabase]);
+
+  const runReset = useCallback(async () => {
+    if (!resetAttemptId || !resetSectionId) {
+      setAlertMessage({
+        title: "Error",
+        message: "Select a user and an assessment first.",
+        type: "error",
+      });
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const res = await fetch("/api/admin/reset-assessment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attemptId: resetAttemptId, sectionId: resetSectionId }),
+      });
+      const body = (await res.json().catch(() => null)) as
+        | { ok: true; deletedAnswerRows: number; deletedTypingRows: number }
+        | { ok: false; error: string }
+        | null;
+
+      if (!res.ok || !body || !("ok" in body) || !body.ok) {
+        setAlertMessage({
+          title: "Reset Failed",
+          message: body && "error" in body ? body.error : "Failed to reset assessment.",
+          type: "error",
+        });
+        return;
+      }
+
+      setAlertMessage({
+        title: "Reset Complete",
+        message:
+          resetSectionId === "__typing__"
+            ? `Typing reset. Deleted ${body.deletedTypingRows} row(s).`
+            : `Deleted ${body.deletedAnswerRows} answer(s) for this assessment.`,
+        type: "success",
+      });
+
+      void loadData();
+    } finally {
+      setIsResetting(false);
+    }
+  }, [loadData, resetAttemptId, resetSectionId]);
 
   useEffect(() => {
     const authed = sessionStorage.getItem("admin_authed");
@@ -797,7 +904,7 @@ export default function AdminPage() {
         
         <div className="flex gap-4 border-b border-slate-200 dark:border-white/10 pb-2">
           {(
-            ["results", "typing", "sections", "questions", "candidates", "attempts", "password"] as const
+            ["results", "typing", "sections", "questions", "candidates", "attempts", "reset", "password"] as const
           ).map((tab) => (
             <button
               key={tab}
@@ -812,7 +919,7 @@ export default function AdminPage() {
         {isLoading ? (
           <div className="flex items-center gap-2"><Loader2 className="animate-spin" /> Loading...</div>
         ) : (
-          <div className="card p-6 dark:card-dark overflow-auto">
+          <div className="card p-6 dark:card-dark">
             {activeTab === "results" && (
               <div className="flex flex-col gap-8">
                 <div>
@@ -822,7 +929,7 @@ export default function AdminPage() {
                     <div className="flex flex-col gap-3 bg-slate-50 dark:bg-white/5 p-4 rounded-xl border border-slate-200 dark:border-white/10 w-full md:w-[520px]">
                       <DateRangeTimeline
                         minDate={minDate}
-                        maxDate={new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate() + totalDays)}
+                        maxDate={new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate() + totalDays + 5)}
                         storageKey="admin_date_filter"
                         onChange={(s, e) => {
                           setSelectedStartISO(s);
@@ -891,9 +998,9 @@ export default function AdminPage() {
 
                 <div>
                   <h3 className="text-lg font-bold mb-4">Candidate Scores</h3>
-                  <div className="overflow-x-auto">
+                  <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/5">
                     <table className="w-full text-left text-sm">
-                      <thead>
+                      <thead className="sticky top-0 z-10 bg-white dark:bg-slate-900">
                         <tr className="border-b dark:border-white/10">
                           <th className="py-2 px-2">Candidate</th>
                           <th className="py-2 px-2">Email</th>
@@ -1176,9 +1283,9 @@ export default function AdminPage() {
                   </div>
                 </div>
                 <p className="text-sm text-slate-500">Edit question prompts below. For full choice/answer editing, use the database dashboard for now.</p>
-                <div className="overflow-x-auto">
+                <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/5">
                   <table className="w-full text-left text-sm whitespace-nowrap">
-                    <thead>
+                    <thead className="sticky top-0 z-10 bg-white dark:bg-slate-900">
                       <tr className="border-b dark:border-white/10">
                         <th className="py-2 px-2">Section</th>
                         <th className="py-2 px-2">Prompt</th>
@@ -1245,64 +1352,133 @@ export default function AdminPage() {
             {activeTab === "candidates" && (
               <div className="flex flex-col gap-4">
                 <h2 className="text-xl font-bold">Candidates (from empDB)</h2>
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b dark:border-white/10">
-                      <th className="py-2">Name</th>
-                      <th className="py-2">Email (Confirm Email)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {candidates.map((c, i) => (
-                      <tr key={i} className="border-b dark:border-white/5">
-                        <td className="py-2">{c.name}</td>
-                        <td className="py-2">{c.email}</td>
+                <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/5">
+                  <table className="w-full text-left">
+                    <thead className="sticky top-0 z-10 bg-white dark:bg-slate-900">
+                      <tr className="border-b dark:border-white/10">
+                        <th className="py-2">Name</th>
+                        <th className="py-2">Email (Confirm Email)</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {candidates.map((c, i) => (
+                        <tr key={i} className="border-b dark:border-white/5">
+                          <td className="py-2">{c.name}</td>
+                          <td className="py-2">{c.email}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
             {activeTab === "attempts" && (
               <div className="flex flex-col gap-4">
                 <h2 className="text-xl font-bold">Attempts & Results</h2>
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b dark:border-white/10">
-                      <th className="py-2">Name</th>
-                      <th className="py-2">Email</th>
-                      <th className="py-2">Score</th>
-                      <th className="py-2">Typing</th>
-                      <th className="py-2">Started</th>
-                      <th className="py-2">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attempts.map((a) => (
-                      <tr key={a.id} className="border-b dark:border-white/5">
-                        <td className="py-2">{a.candidate_name}</td>
-                        <td className="py-2">{a.candidate_email}</td>
-                        <td className="py-2">{a.total_score !== null ? `${a.total_score} / ${a.max_score}` : "In Progress"}</td>
-                        <td className="py-2">
-                          {(() => {
-                            const t = typingByAttemptId.get(a.id);
-                            if (!t || (t.wpm === null && t.accuracy === null)) return "—";
-                            if (t.wpm !== null && t.accuracy !== null) return `${t.wpm} WPM • ${t.accuracy}%`;
-                            if (t.wpm !== null) return `${t.wpm} WPM`;
-                            return `${t.accuracy}%`;
-                          })()}
-                        </td>
-                        <td className="py-2">{new Date(a.started_at).toLocaleString()}</td>
-                        <td className="py-2">
-                          <button onClick={() => setDeleteAttemptId(a.id)} className="text-red-500 hover:text-red-700 flex items-center gap-1">
-                            <Trash2 className="w-4 h-4" /> Reset
-                          </button>
-                        </td>
+                <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-200 bg-white p-2 dark:border-white/10 dark:bg-white/5">
+                  <table className="w-full text-left whitespace-nowrap">
+                    <thead className="sticky top-0 z-10 bg-white dark:bg-slate-900">
+                      <tr className="border-b dark:border-white/10">
+                        <th className="py-2">Name</th>
+                        <th className="py-2">Email</th>
+                        <th className="py-2">Score</th>
+                        <th className="py-2">Typing</th>
+                        <th className="py-2">Started</th>
+                        <th className="py-2">Action</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {attempts.map((a) => (
+                        <tr key={a.id} className="border-b dark:border-white/5">
+                          <td className="py-2">{a.candidate_name}</td>
+                          <td className="py-2">{a.candidate_email}</td>
+                          <td className="py-2">{a.total_score !== null ? `${a.total_score} / ${a.max_score}` : "In Progress"}</td>
+                          <td className="py-2">
+                            {(() => {
+                              const t = typingByAttemptId.get(a.id);
+                              if (!t || (t.wpm === null && t.accuracy === null)) return "—";
+                              if (t.wpm !== null && t.accuracy !== null) return `${t.wpm} WPM • ${t.accuracy}%`;
+                              if (t.wpm !== null) return `${t.wpm} WPM`;
+                              return `${t.accuracy}%`;
+                            })()}
+                          </td>
+                          <td className="py-2">{new Date(a.started_at).toLocaleString()}</td>
+                          <td className="py-2">
+                            <button onClick={() => setDeleteAttemptId(a.id)} className="text-red-500 hover:text-red-700 flex items-center gap-1">
+                              <Trash2 className="w-4 h-4" /> Reset
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === "reset" && (
+              <div className="flex flex-col gap-4 max-w-3xl">
+                <h2 className="text-xl font-bold">Reset Assessment</h2>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/5">
+                  <div className="grid gap-4">
+                    <label className="grid gap-2">
+                      <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">User (type to search)</div>
+                      <input
+                        value={resetUserEmail}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setResetUserEmail(v);
+                          const found = resetAttemptByEmail.get(v.trim().toLowerCase());
+                          setResetAttemptId(found?.id ?? "");
+                        }}
+                        list="reset-users"
+                        className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/5"
+                        placeholder="Start typing the user email…"
+                        autoComplete="off"
+                      />
+                      <datalist id="reset-users">
+                        {resetAttemptBase.slice(0, 2000).map((a) => {
+                          const email = String(a.candidate_email ?? "").trim().toLowerCase();
+                          if (!email) return null;
+                          return (
+                            <option key={a.id} value={email}>
+                              {String(a.candidate_name ?? "Unknown")} — {new Date(a.started_at).toLocaleString()}
+                            </option>
+                          );
+                        })}
+                      </datalist>
+                    </label>
+
+                    <label className="grid gap-2">
+                      <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">Select assessment</div>
+                      <select
+                        value={resetSectionId}
+                        onChange={(e) => setResetSectionId(e.target.value)}
+                        className="h-12 rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/5"
+                      >
+                        <option value="">Select…</option>
+                        {resetAssessmentOptions.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={runReset}
+                        disabled={isResetting}
+                        className="btn btn-primary inline-flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {isResetting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                        Reset Selected Assessment
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
