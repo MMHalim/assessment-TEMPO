@@ -140,13 +140,17 @@ export default function AdminPage() {
   
   const filteredAttempts = attempts.filter(isAttemptInFilter);
   
-  const groupedAttempts = (() => {
-    const answerCounts = new Map<string, number>();
+  const answerCountsByAttemptId = (() => {
+    const m = new Map<string, number>();
     for (const a of attemptAnswers) {
       const id = String((a as { attempt_id?: unknown }).attempt_id ?? "");
       if (!id) continue;
-      answerCounts.set(id, (answerCounts.get(id) ?? 0) + 1);
+      m.set(id, (m.get(id) ?? 0) + 1);
     }
+    return m;
+  })();
+
+  const groupedAttempts = (() => {
     const byEmail = new Map<string, Attempt>();
     for (const a of filteredAttempts) {
       const key = String(a.candidate_email || "").trim().toLowerCase();
@@ -156,8 +160,8 @@ export default function AdminPage() {
         byEmail.set(key, a);
         continue;
       }
-      const existingCount = answerCounts.get(existing.id) ?? 0;
-      const nextCount = answerCounts.get(a.id) ?? 0;
+      const existingCount = answerCountsByAttemptId.get(existing.id) ?? 0;
+      const nextCount = answerCountsByAttemptId.get(a.id) ?? 0;
       const existingT = new Date(existing.started_at).getTime();
       const nextT = new Date(a.started_at).getTime();
       if (nextCount > existingCount || (nextCount === existingCount && nextT > existingT)) {
@@ -167,33 +171,42 @@ export default function AdminPage() {
     return Array.from(byEmail.values());
   })();
 
-  const resetAttemptBase = (() => {
-    const byEmail = new Map<string, Attempt>();
-    for (const a of attempts) {
-      const key = String(a.candidate_email || "").trim().toLowerCase();
-      if (!key) continue;
-      const existing = byEmail.get(key);
-      if (!existing) {
-        byEmail.set(key, a);
-        continue;
-      }
-      const existingT = new Date(existing.started_at).getTime();
-      const nextT = new Date(a.started_at).getTime();
-      if (nextT > existingT) byEmail.set(key, a);
-    }
-    return Array.from(byEmail.values()).sort(
-      (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime(),
-    );
-  })();
-
   const resetAttemptByEmail = (() => {
     const m = new Map<string, Attempt>();
-    for (const a of resetAttemptBase) {
-      const key = String(a.candidate_email || "").trim().toLowerCase();
-      if (!key) continue;
-      m.set(key, a);
+    for (const a of attempts) {
+      const email = String(a.candidate_email || "").trim().toLowerCase();
+      if (!email) continue;
+      const existing = m.get(email);
+      if (!existing) {
+        m.set(email, a);
+        continue;
+      }
+
+      const aActive = a.completed_at === null;
+      const eActive = existing.completed_at === null;
+      if (aActive !== eActive) {
+        if (aActive) m.set(email, a);
+        continue;
+      }
+
+      const aCount = answerCountsByAttemptId.get(a.id) ?? 0;
+      const eCount = answerCountsByAttemptId.get(existing.id) ?? 0;
+      const aT = new Date(a.started_at).getTime();
+      const eT = new Date(existing.started_at).getTime();
+      if (aCount > eCount || (aCount === eCount && aT > eT)) {
+        m.set(email, a);
+      }
     }
     return m;
+  })();
+
+  const resetUserOptions = (() => {
+    const list = Array.from(resetAttemptByEmail.entries()).map(([email, a]) => {
+      const count = answerCountsByAttemptId.get(a.id) ?? 0;
+      return { email, attempt: a, count };
+    });
+    list.sort((x, y) => new Date(y.attempt.started_at).getTime() - new Date(x.attempt.started_at).getTime());
+    return list;
   })();
 
   const resetAssessmentOptions: Array<{ id: string; title: string }> = [
@@ -264,7 +277,7 @@ export default function AdminPage() {
   }, [supabase]);
 
   const runReset = useCallback(async () => {
-    if (!resetAttemptId || !resetSectionId) {
+    if (!resetUserEmail.trim() || !resetSectionId) {
       setAlertMessage({
         title: "Error",
         message: "Select a user and an assessment first.",
@@ -278,10 +291,14 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/reset-assessment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attemptId: resetAttemptId, sectionId: resetSectionId }),
+        body: JSON.stringify({
+          attemptId: resetAttemptId || undefined,
+          candidateEmail: resetUserEmail.trim().toLowerCase(),
+          sectionId: resetSectionId,
+        }),
       });
       const body = (await res.json().catch(() => null)) as
-        | { ok: true; deletedAnswerRows: number; deletedTypingRows: number }
+        | { ok: true; attemptId: string; deletedAnswerRows: number; deletedTypingRows: number }
         | { ok: false; error: string }
         | null;
 
@@ -298,8 +315,8 @@ export default function AdminPage() {
         title: "Reset Complete",
         message:
           resetSectionId === "__typing__"
-            ? `Typing reset. Deleted ${body.deletedTypingRows} row(s).`
-            : `Deleted ${body.deletedAnswerRows} answer(s) for this assessment.`,
+            ? `Typing reset. Deleted ${body.deletedTypingRows} row(s). Attempt: ${body.attemptId}`
+            : `Deleted ${body.deletedAnswerRows} answer(s) for this assessment. Attempt: ${body.attemptId}`,
         type: "success",
       });
 
@@ -307,7 +324,7 @@ export default function AdminPage() {
     } finally {
       setIsResetting(false);
     }
-  }, [loadData, resetAttemptId, resetSectionId]);
+  }, [loadData, resetAttemptId, resetSectionId, resetUserEmail]);
 
   useEffect(() => {
     const authed = sessionStorage.getItem("admin_authed");
@@ -1438,15 +1455,13 @@ export default function AdminPage() {
                         autoComplete="off"
                       />
                       <datalist id="reset-users">
-                        {resetAttemptBase.slice(0, 2000).map((a) => {
-                          const email = String(a.candidate_email ?? "").trim().toLowerCase();
-                          if (!email) return null;
-                          return (
-                            <option key={a.id} value={email}>
-                              {String(a.candidate_name ?? "Unknown")} — {new Date(a.started_at).toLocaleString()}
-                            </option>
-                          );
-                        })}
+                        {resetUserOptions.slice(0, 2000).map((r) => (
+                          <option key={r.attempt.id} value={r.email}>
+                            {String(r.attempt.candidate_name ?? "Unknown")} — {r.count} answers —{" "}
+                            {r.attempt.completed_at ? "Completed" : "In progress"} —{" "}
+                            {new Date(r.attempt.started_at).toLocaleString()}
+                          </option>
+                        ))}
                       </datalist>
                     </label>
 

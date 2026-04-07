@@ -608,6 +608,16 @@ export default function AssessmentRunner({ attemptId }: Props) {
       );
       setAnsweredQuestionIds(answered);
 
+      const { data: typingRow, error: typingRowError } = await supabase
+        .from("typing_test_results")
+        .select("attempt_id, paragraph_id, completed_at")
+        .eq("attempt_id", attemptId)
+        .maybeSingle();
+      if (typingRowError) throw typingRowError;
+
+      const typingDone = Boolean(typingRow?.completed_at);
+      setTypingCompleted(typingDone);
+
       let skipped = new Set<string>();
       const skippedStr = sessionStorage.getItem(`assessment_skipped_${attemptId}`);
       if (skippedStr) {
@@ -619,6 +629,36 @@ export default function AssessmentRunner({ attemptId }: Props) {
         } catch {
         }
       }
+
+      if (skipped.size > 0) {
+        const byId = new Map<string, AssessmentSection>();
+        for (const s of sortedSections as AssessmentSection[]) byId.set(s.id, s);
+
+        const pruned = new Set<string>();
+        for (const sectionId of skipped) {
+          const section = byId.get(sectionId) ?? null;
+          if (isTypingSection(section)) {
+            if (typingDone) pruned.add(sectionId);
+            continue;
+          }
+
+          const qs = map[sectionId] ?? [];
+          if (qs.length === 0) {
+            pruned.add(sectionId);
+            continue;
+          }
+
+          const allPresent = qs.every((q) => answered.has(q.id));
+          if (allPresent) pruned.add(sectionId);
+        }
+
+        skipped = pruned;
+        sessionStorage.setItem(
+          `assessment_skipped_${attemptId}`,
+          JSON.stringify(Array.from(skipped)),
+        );
+      }
+
       setSkippedSectionIds(skipped);
 
       if (!restoredFromSession) {
@@ -660,16 +700,6 @@ export default function AssessmentRunner({ attemptId }: Props) {
       setQuestionIndex(startQuestionIndex);
       
       setSelectedChoice(null);
-
-      const { data: typingRow, error: typingRowError } = await supabase
-        .from("typing_test_results")
-        .select("attempt_id, paragraph_id, completed_at")
-        .eq("attempt_id", attemptId)
-        .maybeSingle();
-      if (typingRowError) throw typingRowError;
-
-      const typingDone = Boolean(typingRow?.completed_at);
-      setTypingCompleted(typingDone);
 
       if (!typingDone) {
         const typingIdx = sortedSections.findIndex((s) => {
