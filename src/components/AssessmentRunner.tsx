@@ -95,12 +95,13 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const [spokenParagraphVisible, setSpokenParagraphVisible] = useState(false);
   const [spokenLiveTranscript, setSpokenLiveTranscript] = useState("");
   const [spokenExpectedWords, setSpokenExpectedWords] = useState<string[]>([]);
-  const [spokenMatchedWordCount, setSpokenMatchedWordCount] = useState(0);
+  const [spokenProgressWordCount, setSpokenProgressWordCount] = useState(0);
   const [spokenError, setSpokenError] = useState<string | null>(null);
   const [spokenReadyToSubmit, setSpokenReadyToSubmit] = useState(false);
   const [spokenScorePercent, setSpokenScorePercent] = useState<number | null>(null);
   const spokenLastTranscriptRef = useRef<string>("");
   const spokenHasFinalizedRef = useRef(false);
+  const spokenMaxProgressRef = useRef(0);
 
   const currentSection = sections[sectionIndex] ?? null;
   const currentQuestions = currentSection
@@ -979,14 +980,14 @@ export default function AssessmentRunner({ attemptId }: Props) {
     stopSpokenRecognition();
     const expectedWords = normalizeSpokenText(currentQuestion.prompt).split(" ").filter(Boolean);
     setSpokenExpectedWords(expectedWords);
-    setSpokenMatchedWordCount(0);
-    setSpokenParagraphVisible(false);
+    setSpokenProgressWordCount(0);
     setSpokenLiveTranscript("");
     setSpokenError(null);
     setSpokenReadyToSubmit(false);
     setSpokenScorePercent(null);
     spokenLastTranscriptRef.current = "";
     spokenHasFinalizedRef.current = false;
+    spokenMaxProgressRef.current = 0;
     const t = window.setTimeout(() => setSpokenParagraphVisible(true), 50);
     return () => window.clearTimeout(t);
   }, [currentQuestion, isSpokenQuestion, normalizeSpokenText, step.type, stopSpokenRecognition]);
@@ -1017,7 +1018,6 @@ export default function AssessmentRunner({ attemptId }: Props) {
 
       const overallPct = similarityPercent(currentQuestion.prompt, finalText);
       setSpokenLiveTranscript(finalText);
-      setSpokenMatchedWordCount(countMatchedSpokenWords(spokenExpectedWords, finalText));
       setSpokenScorePercent(overallPct);
       setSpokenReadyToSubmit(true);
 
@@ -1027,13 +1027,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
         setSpokenError(null);
       }
     },
-    [
-      countMatchedSpokenWords,
-      currentQuestion,
-      similarityPercent,
-      spokenExpectedWords,
-      stopSpokenRecognition,
-    ],
+    [currentQuestion, similarityPercent, stopSpokenRecognition],
   );
 
   const startSpokenParagraph = useCallback(() => {
@@ -1078,8 +1072,15 @@ export default function AssessmentRunner({ attemptId }: Props) {
       if (!best) return;
       spokenLastTranscriptRef.current = best;
       setSpokenLiveTranscript(best);
+
+      const spokenWordCount = best.split(" ").filter(Boolean).length;
+      const capped = Math.min(spokenExpectedWords.length, spokenWordCount);
+      if (capped > spokenMaxProgressRef.current) {
+        spokenMaxProgressRef.current = capped;
+        setSpokenProgressWordCount(capped);
+      }
+
       const matched = countMatchedSpokenWords(spokenExpectedWords, best);
-      setSpokenMatchedWordCount(matched);
       if (matched >= spokenExpectedWords.length) {
         void finalizeSpokenParagraph(best);
       }
@@ -2112,8 +2113,8 @@ export default function AssessmentRunner({ attemptId }: Props) {
                           {spokenRenderTokens.map((t) => {
                             if (!t.isWord) return <span key={t.key}>{t.text}</span>;
                             const idx = t.wordIndex ?? 0;
-                            const isDone = idx < spokenMatchedWordCount;
-                            const isCurrent = idx === spokenMatchedWordCount && spokenIsListening;
+                            const isDone = idx < spokenProgressWordCount;
+                            const isCurrent = idx === spokenProgressWordCount && spokenIsListening;
                             const className = [
                               "rounded px-1 py-0.5 transition-colors",
                               isDone
@@ -2162,7 +2163,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
                     <div className="mt-4 flex items-center justify-between gap-3 text-xs font-semibold text-slate-500 dark:text-slate-300">
                       <div>Progress</div>
                       <div>
-                        {spokenMatchedWordCount}/{spokenExpectedWords.length} words
+                        {spokenProgressWordCount}/{spokenExpectedWords.length} words
                       </div>
                     </div>
 

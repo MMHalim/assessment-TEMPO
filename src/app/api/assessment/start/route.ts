@@ -6,7 +6,23 @@ function pickString(v: unknown): string | null {
 }
 
 function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
+  return email
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeKeyPart(v: string): string {
+  return (v ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function escapeLike(v: string): string {
+  return v.replace(/[\\%_]/g, (m) => `\\${m}`);
 }
 
 export async function POST(request: Request) {
@@ -40,34 +56,81 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: row, error: readError } = await supabase
-    .from("empDB")
-    .select(`"Email","Email_Address"`)
-    .eq("Name", name)
-    .eq("Timestamp", timestamp)
-    .limit(1)
-    .maybeSingle();
+  const lookups = [
+    { nameCol: "Name", tsCol: "Timestamp", emailCol: "Email" },
+    { nameCol: "Name", tsCol: "Timestamp", emailCol: "Email_Address" },
+    { nameCol: "name", tsCol: "timestamp", emailCol: "email" },
+    { nameCol: "name", tsCol: "timestamp", emailCol: "email_address" },
+    { nameCol: "Name", tsCol: "Timestamp", emailCol: "email" },
+    { nameCol: "Name", tsCol: "Timestamp", emailCol: "email_address" },
+    { nameCol: "name", tsCol: "timestamp", emailCol: "Email" },
+    { nameCol: "name", tsCol: "timestamp", emailCol: "Email_Address" },
+  ] as const;
 
-  if (readError || !row) {
+  let matchedEmail = "";
+  let foundCandidateRow = false;
+  let hadReadableLookup = false;
+  const normalizedName = normalizeKeyPart(name);
+  const normalizedTimestamp = normalizeKeyPart(timestamp);
+  const namePrefix = `${escapeLike(normalizedName)}%`;
+  const tsPrefix = `${escapeLike(normalizedTimestamp)}%`;
+
+  for (const { nameCol, tsCol, emailCol } of lookups) {
+    const { data, error } = await supabase
+      .from("empDB")
+      .select(`${nameCol},${tsCol},${emailCol}`)
+      .ilike(nameCol, namePrefix)
+      .ilike(tsCol, tsPrefix)
+      .limit(20);
+
+    if (error) continue;
+    hadReadableLookup = true;
+    const rows = (data ?? []) as Array<Record<string, unknown>>;
+    if (rows.length === 0) continue;
+
+    for (const record of rows) {
+      const rawName = pickString(record[nameCol]) ?? "";
+      const rawTs = pickString(record[tsCol]) ?? "";
+      const rowName = normalizeKeyPart(rawName);
+      const rowTs = normalizeKeyPart(rawTs);
+      if (rowName !== normalizedName) continue;
+      if (rowTs !== normalizedTimestamp) continue;
+      foundCandidateRow = true;
+
+      const stored = normalizeEmail(pickString(record[emailCol]) ?? "");
+      if (stored && stored === email) {
+        matchedEmail = stored;
+        break;
+      }
+    }
+
+    if (matchedEmail) break;
+  }
+
+  if (!hadReadableLookup) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Assessment access is not configured. Please contact the administrator.",
+      },
+      { status: 500 },
+    );
+  }
+
+  if (!foundCandidateRow) {
     return NextResponse.json(
       { ok: false, error: "Wrong email, please try again !" },
       { status: 404 },
     );
   }
 
-  const record = row as Record<string, unknown>;
-  const emailA = normalizeEmail(pickString(record["Email"]) ?? "");
-  const emailB = normalizeEmail(pickString(record["Email_Address"]) ?? "");
-
-  const matches = (emailA && emailA === email) || (emailB && emailB === email);
-  if (!matches) {
+  if (!matchedEmail) {
     return NextResponse.json(
       { ok: false, error: "Wrong email, please try again !" },
       { status: 403 },
     );
   }
-
-  const matchedEmail = emailA || emailB || email;
 
   const { count: completedCount, error: completedError } = await supabase
     .from("assessment_attempts")
