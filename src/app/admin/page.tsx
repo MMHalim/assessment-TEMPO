@@ -438,6 +438,53 @@ export default function AdminPage() {
   }
 
   const typingByAttemptId = (() => {
+    const normalizeTypingForCompare = (v: string) =>
+      (v ?? "")
+        .replace(/\r\n/g, "\n")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+
+    const computeTypingAccuracy = (expectedRaw: string, typedRaw: string) => {
+      const expected = normalizeTypingForCompare(expectedRaw);
+      const typed = normalizeTypingForCompare(typedRaw);
+      const n = expected.length;
+      const m = typed.length;
+      if (n === 0 && m === 0) return 0;
+      let prev = Array.from({ length: m + 1 }, (_, j) => j);
+      let curr = Array.from({ length: m + 1 }, () => 0);
+      for (let i = 1; i <= n; i++) {
+        curr[0] = i;
+        const ei = expected.charCodeAt(i - 1);
+        for (let j = 1; j <= m; j++) {
+          const cost = ei === typed.charCodeAt(j - 1) ? 0 : 1;
+          const del = prev[j] + 1;
+          const ins = curr[j - 1] + 1;
+          const sub = prev[j - 1] + cost;
+          curr[j] = Math.min(del, ins, sub);
+        }
+        const tmp = prev;
+        prev = curr;
+        curr = tmp;
+      }
+      const dist = prev[m] ?? 0;
+      const totalCompared = Math.max(n, m);
+      const correctApprox = Math.max(0, totalCompared - dist);
+      const accuracy = totalCompared === 0 ? 0 : Math.round((correctApprox / totalCompared) * 100);
+      return Math.max(0, Math.min(100, accuracy));
+    };
+
+    const paragraphTextById = (() => {
+      const m = new Map<string, string>();
+      for (const p of typingParagraphs) {
+        const id = String((p as { id?: unknown }).id ?? "");
+        const text = String((p as { text?: unknown }).text ?? "");
+        if (id) m.set(id, text);
+      }
+      return m;
+    })();
+
     const map = new Map<string, { wpm: number | null; accuracy: number | null }>();
     for (const r of typingResults) {
       const attemptId = String((r as { attempt_id?: unknown }).attempt_id ?? "");
@@ -446,9 +493,16 @@ export default function AdminPage() {
       const accRaw = (r as { accuracy?: unknown }).accuracy;
       const wpm = typeof wpmRaw === "number" ? wpmRaw : wpmRaw === null ? null : Number(wpmRaw);
       const accuracy = typeof accRaw === "number" ? accRaw : accRaw === null ? null : Number(accRaw);
+
+      const paragraphId = String((r as { paragraph_id?: unknown }).paragraph_id ?? "");
+      const typedText = String((r as { typed_text?: unknown }).typed_text ?? "");
+      const expectedText = paragraphTextById.get(paragraphId) ?? "";
+      const derivedAccuracy =
+        paragraphId && expectedText && typedText ? computeTypingAccuracy(expectedText, typedText) : null;
+
       map.set(attemptId, {
         wpm: Number.isFinite(wpm) ? wpm : null,
-        accuracy: Number.isFinite(accuracy) ? accuracy : null,
+        accuracy: derivedAccuracy ?? (Number.isFinite(accuracy) ? accuracy : null),
       });
     }
     return map;

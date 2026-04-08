@@ -863,19 +863,59 @@ export default function AssessmentRunner({ attemptId }: Props) {
   }, [currentQuestions.length, currentSection, goToMenu, isTypingSection, sectionIndex, step.type]);
 
   const computeTypingSummary = useCallback((source: string, typed: string) => {
-    const s = source ?? "";
-    const t = typed ?? "";
-    const minLen = Math.min(s.length, t.length);
-    let correct = 0;
-    for (let i = 0; i < minLen; i++) {
-      if (s[i] === t[i]) correct++;
+    const normalize = (v: string) =>
+      (v ?? "")
+        .replace(/\r\n/g, "\n")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+
+    const s = normalize(source);
+    const t = normalize(typed);
+
+    const n = s.length;
+    const m = t.length;
+
+    if (n === 0 && m === 0) {
+      return { wpm: 0, accuracy: 0, correctChars: 0, totalCompared: 0, extraChars: 0, missingChars: 0 };
     }
-    const extra = Math.max(0, t.length - s.length);
-    const missing = Math.max(0, s.length - t.length);
-    const totalCompared = Math.max(s.length, t.length);
-    const accuracy = totalCompared === 0 ? 0 : Math.round((correct / totalCompared) * 1000) / 10;
-    const wpm = Math.max(0, Math.round(t.length / 5));
-    return { wpm, accuracy, correctChars: correct, totalCompared, extraChars: extra, missingChars: missing };
+
+    let prev = Array.from({ length: m + 1 }, (_, j) => j);
+    let curr = Array.from({ length: m + 1 }, () => 0);
+
+    for (let i = 1; i <= n; i++) {
+      curr[0] = i;
+      const si = s.charCodeAt(i - 1);
+      for (let j = 1; j <= m; j++) {
+        const cost = si === t.charCodeAt(j - 1) ? 0 : 1;
+        const del = prev[j] + 1;
+        const ins = curr[j - 1] + 1;
+        const sub = prev[j - 1] + cost;
+        curr[j] = Math.min(del, ins, sub);
+      }
+      const tmp = prev;
+      prev = curr;
+      curr = tmp;
+    }
+
+    const dist = prev[m] ?? 0;
+    const totalCompared = Math.max(n, m);
+    const correctApprox = Math.max(0, totalCompared - dist);
+    const extra = Math.max(0, m - n);
+    const missing = Math.max(0, n - m);
+    const accuracy = totalCompared === 0 ? 0 : Math.round(((correctApprox / totalCompared) * 100));
+
+    const rawTypedLen = (typed ?? "").length;
+    const wpm = Math.max(0, Math.round(rawTypedLen / 5));
+    return {
+      wpm,
+      accuracy,
+      correctChars: correctApprox,
+      totalCompared,
+      extraChars: extra,
+      missingChars: missing,
+    };
   }, []);
 
   const normalizeSpokenText = useCallback((input: string) => {
