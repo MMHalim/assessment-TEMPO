@@ -43,7 +43,7 @@ export default function AdminPage() {
   const [isTogglingTypingParagraph, setIsTogglingTypingParagraph] = useState<Record<string, boolean>>({});
   
   const [minDate, setMinDate] = useState<Date>(new Date());
-  const [totalDays, setTotalDays] = useState<number>(0);
+  const [maxDate, setMaxDate] = useState<Date>(new Date());
   
 
   
@@ -74,14 +74,7 @@ export default function AdminPage() {
       const minD = new Date(minT);
       const maxD = new Date(maxT);
       setMinDate(minD);
-      
-      let days = 0;
-      let cur = new Date(minD.getFullYear(), minD.getMonth(), minD.getDate());
-      while (cur.getTime() < maxD.getTime()) {
-        days++;
-        cur = new Date(minD.getFullYear(), minD.getMonth(), minD.getDate() + days);
-      }
-      setTotalDays(days);
+      setMaxDate(maxD);
     }
   }, [empDBData]);
 
@@ -1000,7 +993,7 @@ export default function AdminPage() {
                     <div className="flex flex-col gap-3 bg-slate-50 dark:bg-white/5 p-4 rounded-xl border border-slate-200 dark:border-white/10 w-full md:w-[520px]">
                       <DateRangeTimeline
                         minDate={minDate}
-                        maxDate={new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate() + totalDays + 5)}
+                        maxDate={maxDate}
                         storageKey="admin_date_filter"
                         onChange={(s, e) => {
                           setSelectedStartISO(s);
