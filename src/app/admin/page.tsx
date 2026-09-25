@@ -7,6 +7,56 @@ import { Loader2, Trash2, XCircle, CheckCircle2, Info } from "lucide-react";
 import DateRangeTimeline from "@/components/DateRangeTimeline";
 import type { AssessmentSection, AssessmentQuestion, Attempt } from "@/lib/assessmentTypes";
 
+const EGYPT_TIME_ZONE = "Africa/Cairo";
+
+function getDatePartsInTimeZone(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(date);
+
+  return {
+    year: Number(parts.find((part) => part.type === "year")?.value),
+    month: Number(parts.find((part) => part.type === "month")?.value),
+    day: Number(parts.find((part) => part.type === "day")?.value),
+  };
+}
+
+function normalizeDateInTimeZone(date: Date, timeZone: string) {
+  const { year, month, day } = getDatePartsInTimeZone(date, timeZone);
+  return new Date(year, month - 1, day);
+}
+
+function parseDateOnly(dateText: string) {
+  const parts = dateText.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return new Date(dateText);
+  const [year, month, day] = parts;
+  return new Date(year, month - 1, day);
+}
+
+function parseEmpTimestamp(dateText: string) {
+  let parsed = new Date(dateText);
+  if (isNaN(parsed.getTime())) {
+    const parts = dateText.split(" ")[0].split("/");
+    if (parts.length === 3) {
+      const [day, month, year] = parts.map(Number);
+      if (![day, month, year].some(Number.isNaN)) {
+        parsed = new Date(year, month - 1, day);
+      }
+    }
+  }
+
+  if (isNaN(parsed.getTime())) return null;
+  return normalizeDateInTimeZone(parsed, EGYPT_TIME_ZONE);
+}
+
+function getEgyptToday() {
+  return normalizeDateInTimeZone(new Date(), EGYPT_TIME_ZONE);
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const [authorized, setAuthorized] = useState(false);
@@ -42,8 +92,8 @@ export default function AdminPage() {
   const [isDeletingTypingParagraph, setIsDeletingTypingParagraph] = useState<Record<string, boolean>>({});
   const [isTogglingTypingParagraph, setIsTogglingTypingParagraph] = useState<Record<string, boolean>>({});
   
-  const [minDate, setMinDate] = useState<Date>(new Date());
-  const [maxDate, setMaxDate] = useState<Date>(new Date());
+  const [minDate, setMinDate] = useState<Date>(getEgyptToday);
+  const [maxDate, setMaxDate] = useState<Date>(getEgyptToday);
   
 
   
@@ -52,18 +102,13 @@ export default function AdminPage() {
     if (empDBData.length === 0) return;
     
     let minT = Infinity;
-    let maxT = -Infinity;
+    let maxT = getEgyptToday().getTime();
     
     empDBData.forEach(emp => {
       if (emp.Timestamp) {
-        const dateStr = String(emp.Timestamp);
-        let d = new Date(dateStr);
-        if (isNaN(d.getTime())) {
-          const parts = dateStr.split(" ")[0].split("/");
-          if (parts.length === 3) d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-        }
-        if (!isNaN(d.getTime())) {
-          const dNormalized = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        const normalizedDate = parseEmpTimestamp(String(emp.Timestamp));
+        if (normalizedDate) {
+          const dNormalized = normalizedDate.getTime();
           if (dNormalized < minT) minT = dNormalized;
           if (dNormalized > maxT) maxT = dNormalized;
         }
@@ -85,7 +130,7 @@ export default function AdminPage() {
   const [resetSectionId, setResetSectionId] = useState<string>("");
   const [isResetting, setIsResetting] = useState(false);
   const [adminPwdInput, setAdminPwdInput] = useState("");
-  const [showAuthPrompt, setShowAuthPrompt] = useState(false);
+  const [showAuthPrompt, setShowAuthPrompt] = useState(true);
   const [authError, setAuthError] = useState("");
   const [alertMessage, setAlertMessage] = useState<{ title: string; message: string; type: "error" | "success" | "info" } | null>(null);
 
@@ -101,19 +146,12 @@ export default function AdminPage() {
 
   const isEmpInFilter = (emp: Record<string, unknown>) => {
     if (!emp.Timestamp) return false;
-    const dateStr = String(emp.Timestamp);
-    let d = new Date(dateStr);
-    if (isNaN(d.getTime())) {
-      const parts = dateStr.split(" ")[0].split("/");
-      if (parts.length === 3) d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-    }
-    if (isNaN(d.getTime())) return false;
-    const dn = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const normalizedDate = parseEmpTimestamp(String(emp.Timestamp));
+    if (!normalizedDate) return false;
+    const dn = normalizedDate.getTime();
     if (!selectedStartISO || !selectedEndISO) return true;
-    const s = new Date(selectedStartISO);
-    const e = new Date(selectedEndISO);
-    const sn = new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime();
-    const en = new Date(e.getFullYear(), e.getMonth(), e.getDate()).getTime();
+    const sn = parseDateOnly(selectedStartISO).getTime();
+    const en = parseDateOnly(selectedEndISO).getTime();
     return dn >= sn && dn <= en;
   };
 
@@ -123,11 +161,9 @@ export default function AdminPage() {
     if (!selectedStartISO || !selectedEndISO) return true;
     const d = new Date(att.started_at);
     if (isNaN(d.getTime())) return false;
-    const dn = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    const s = new Date(selectedStartISO);
-    const e = new Date(selectedEndISO);
-    const sn = new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime();
-    const en = new Date(e.getFullYear(), e.getMonth(), e.getDate()).getTime();
+    const dn = normalizeDateInTimeZone(d, EGYPT_TIME_ZONE).getTime();
+    const sn = parseDateOnly(selectedStartISO).getTime();
+    const en = parseDateOnly(selectedEndISO).getTime();
     return dn >= sn && dn <= en;
   };
   
@@ -994,6 +1030,8 @@ export default function AdminPage() {
                       <DateRangeTimeline
                         minDate={minDate}
                         maxDate={maxDate}
+                        timeZone={EGYPT_TIME_ZONE}
+                        constrainToBounds={false}
                         storageKey="admin_date_filter"
                         onChange={(s, e) => {
                           setSelectedStartISO(s);

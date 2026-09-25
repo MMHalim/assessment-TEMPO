@@ -11,6 +11,8 @@ type DateRangeTimelineProps = {
   storageKey?: string;
   onChange?: (startISO: string, endISO: string) => void;
   className?: string;
+  timeZone?: string;
+  constrainToBounds?: boolean;
 };
 
 type DateRange = {
@@ -25,8 +27,39 @@ type DraftRange = {
 
 const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
+function getDatePartsInTimeZone(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  const parts = formatter.formatToParts(date);
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const day = Number(parts.find((part) => part.type === "day")?.value);
+
+  return { year, month, day };
+}
+
 function normalizeDate(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function normalizeDateInTimeZone(date: Date, timeZone: string) {
+  const { year, month, day } = getDatePartsInTimeZone(date, timeZone);
+  return new Date(year, month - 1, day);
+}
+
+function parseISODate(dateText: string) {
+  const parts = dateText.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) {
+    return new Date(dateText);
+  }
+
+  const [year, month, day] = parts;
+  return new Date(year, month - 1, day);
 }
 
 function addDays(date: Date, days: number) {
@@ -50,12 +83,18 @@ function clampDate(date: Date, minDate: Date, maxDate: Date) {
   return normalizeDate(date);
 }
 
+function sortRange(start: Date, end: Date): DateRange {
+  const normalizedStart = normalizeDate(start);
+  const normalizedEnd = normalizeDate(end);
+  return normalizedStart.getTime() <= normalizedEnd.getTime()
+    ? { start: normalizedStart, end: normalizedEnd }
+    : { start: normalizedEnd, end: normalizedStart };
+}
+
 function normalizeRange(start: Date, end: Date, minDate: Date, maxDate: Date): DateRange {
   const clampedStart = clampDate(start, minDate, maxDate);
   const clampedEnd = clampDate(end, minDate, maxDate);
-  return clampedStart.getTime() <= clampedEnd.getTime()
-    ? { start: clampedStart, end: clampedEnd }
-    : { start: clampedEnd, end: clampedStart };
+  return sortRange(clampedStart, clampedEnd);
 }
 
 function isSameDay(a: Date | null, b: Date | null) {
@@ -78,9 +117,18 @@ export default function DateRangeTimeline({
   storageKey = "date_range_timeline",
   onChange,
   className,
+  timeZone,
+  constrainToBounds = true,
 }: DateRangeTimelineProps) {
-  const minDay = useMemo(() => normalizeDate(minDate), [minDate]);
-  const maxDay = useMemo(() => normalizeDate(maxDate), [maxDate]);
+  const resolvedTimeZone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const minDay = useMemo(
+    () => (timeZone ? normalizeDateInTimeZone(minDate, resolvedTimeZone) : normalizeDate(minDate)),
+    [minDate, resolvedTimeZone, timeZone],
+  );
+  const maxDay = useMemo(
+    () => (timeZone ? normalizeDateInTimeZone(maxDate, resolvedTimeZone) : normalizeDate(maxDate)),
+    [maxDate, resolvedTimeZone, timeZone],
+  );
   const safeRange = useMemo(
     () =>
       minDay.getTime() <= maxDay.getTime()
@@ -95,24 +143,28 @@ export default function DateRangeTimeline({
         day: "2-digit",
         month: "short",
         year: "numeric",
+        ...(timeZone ? { timeZone: resolvedTimeZone } : {}),
       }),
-    [],
+    [resolvedTimeZone, timeZone],
   );
   const monthLabelFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat("en", {
         month: "short",
         year: "numeric",
+        ...(timeZone ? { timeZone: resolvedTimeZone } : {}),
       }),
-    [],
+    [resolvedTimeZone, timeZone],
   );
 
   const getDefaultRange = useCallback(() => {
     if (initialStart && initialEnd) {
-      return normalizeRange(initialStart, initialEnd, safeRange.min, safeRange.max);
+      return constrainToBounds
+        ? normalizeRange(initialStart, initialEnd, safeRange.min, safeRange.max)
+        : sortRange(initialStart, initialEnd);
     }
     return { start: safeRange.min, end: safeRange.max };
-  }, [initialEnd, initialStart, safeRange.max, safeRange.min]);
+  }, [constrainToBounds, initialEnd, initialStart, safeRange.max, safeRange.min]);
 
   const readStoredRange = useCallback(() => {
     if (typeof window === "undefined") return null;
@@ -122,11 +174,13 @@ export default function DateRangeTimeline({
     try {
       const parsed = JSON.parse(saved) as { start?: string; end?: string };
       if (!parsed.start || !parsed.end) return null;
-      return normalizeRange(new Date(parsed.start), new Date(parsed.end), safeRange.min, safeRange.max);
+      return constrainToBounds
+        ? normalizeRange(parseISODate(parsed.start), parseISODate(parsed.end), safeRange.min, safeRange.max)
+        : sortRange(parseISODate(parsed.start), parseISODate(parsed.end));
     } catch {
       return null;
     }
-  }, [safeRange.max, safeRange.min, storageKey]);
+  }, [constrainToBounds, safeRange.max, safeRange.min, storageKey]);
 
   const [isOpen, setIsOpen] = useState(false);
   const [appliedRange, setAppliedRange] = useState<DateRange>(() => getDefaultRange());
@@ -176,8 +230,10 @@ export default function DateRangeTimeline({
 
   const displayedRange = useMemo(() => {
     if (!draftRange.start || !draftRange.end) return null;
-    return normalizeRange(draftRange.start, draftRange.end, safeRange.min, safeRange.max);
-  }, [draftRange.end, draftRange.start, safeRange.max, safeRange.min]);
+    return constrainToBounds
+      ? normalizeRange(draftRange.start, draftRange.end, safeRange.min, safeRange.max)
+      : sortRange(draftRange.start, draftRange.end);
+  }, [constrainToBounds, draftRange.end, draftRange.start, safeRange.max, safeRange.min]);
 
   const hasChanges = useMemo(() => {
     if (!displayedRange) return false;
@@ -215,42 +271,56 @@ export default function DateRangeTimeline({
     setVisibleMonth(startOfMonth(range.start));
   };
 
-  const today = useMemo(() => clampDate(new Date(), safeRange.min, safeRange.max), [safeRange.max, safeRange.min]);
+  const today = useMemo(
+    () => {
+      const normalizedToday = timeZone ? normalizeDateInTimeZone(new Date(), resolvedTimeZone) : normalizeDate(new Date());
+      return constrainToBounds ? clampDate(normalizedToday, safeRange.min, safeRange.max) : normalizedToday;
+    },
+    [constrainToBounds, resolvedTimeZone, safeRange.max, safeRange.min, timeZone],
+  );
   const presets = useMemo(
     () => [
       { label: "Today", range: { start: today, end: today } },
       {
         label: "Last 7 days",
-        range: normalizeRange(addDays(today, -6), today, safeRange.min, safeRange.max),
+        range: constrainToBounds
+          ? normalizeRange(addDays(today, -6), today, safeRange.min, safeRange.max)
+          : sortRange(addDays(today, -6), today),
       },
       {
         label: "Last 30 days",
-        range: normalizeRange(addDays(today, -29), today, safeRange.min, safeRange.max),
+        range: constrainToBounds
+          ? normalizeRange(addDays(today, -29), today, safeRange.min, safeRange.max)
+          : sortRange(addDays(today, -29), today),
       },
       {
         label: "This month",
-        range: normalizeRange(new Date(today.getFullYear(), today.getMonth(), 1), today, safeRange.min, safeRange.max),
+        range: constrainToBounds
+          ? normalizeRange(new Date(today.getFullYear(), today.getMonth(), 1), today, safeRange.min, safeRange.max)
+          : sortRange(new Date(today.getFullYear(), today.getMonth(), 1), today),
       },
       {
         label: "Last month",
-        range: normalizeRange(
-          new Date(today.getFullYear(), today.getMonth() - 1, 1),
-          new Date(today.getFullYear(), today.getMonth(), 0),
-          safeRange.min,
-          safeRange.max,
-        ),
+        range: constrainToBounds
+          ? normalizeRange(
+              new Date(today.getFullYear(), today.getMonth() - 1, 1),
+              new Date(today.getFullYear(), today.getMonth(), 0),
+              safeRange.min,
+              safeRange.max,
+            )
+          : sortRange(new Date(today.getFullYear(), today.getMonth() - 1, 1), new Date(today.getFullYear(), today.getMonth(), 0)),
       },
       { label: "All dates", range: { start: safeRange.min, end: safeRange.max } },
     ],
-    [safeRange.max, safeRange.min, today],
+    [constrainToBounds, safeRange.max, safeRange.min, today],
   );
 
   const firstVisibleMonth = startOfMonth(visibleMonth);
   const secondVisibleMonth = addMonths(firstVisibleMonth, 1);
   const minMonth = startOfMonth(safeRange.min);
   const maxMonth = startOfMonth(safeRange.max);
-  const canGoPrev = firstVisibleMonth.getTime() > minMonth.getTime();
-  const canGoNext = secondVisibleMonth.getTime() < maxMonth.getTime();
+  const canGoPrev = !constrainToBounds || firstVisibleMonth.getTime() > minMonth.getTime();
+  const canGoNext = !constrainToBounds || secondVisibleMonth.getTime() < maxMonth.getTime();
 
   const renderMonth = (monthDate: Date) => {
     const monthStart = startOfMonth(monthDate);
@@ -292,7 +362,8 @@ export default function DateRangeTimeline({
             const normalizedDay = normalizeDate(day);
             const isOutsideMonth = normalizedDay.getMonth() !== monthStart.getMonth();
             const isDisabled =
-              normalizedDay.getTime() < safeRange.min.getTime() || normalizedDay.getTime() > safeRange.max.getTime();
+              constrainToBounds &&
+              (normalizedDay.getTime() < safeRange.min.getTime() || normalizedDay.getTime() > safeRange.max.getTime());
             const isStart = isSameDay(normalizedDay, activeStart);
             const isEnd = isSameDay(normalizedDay, activeEnd);
             const isSingleDay = isStart && isEnd;
