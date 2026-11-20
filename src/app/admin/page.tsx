@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 import { Loader2, Trash2, XCircle, CheckCircle2, Info } from "lucide-react";
 import DateRangeTimeline from "@/components/DateRangeTimeline";
+import CompetencyAdmin from "@/components/CompetencyAdmin";
 import type { AssessmentSection, AssessmentQuestion, Attempt } from "@/lib/assessmentTypes";
 
 const EGYPT_TIME_ZONE = "Africa/Cairo";
@@ -61,7 +62,7 @@ export default function AdminPage() {
   const router = useRouter();
   const [authorized, setAuthorized] = useState(false);
   const [activeTab, setActiveTab] = useState<
-    "results" | "sections" | "questions" | "candidates" | "attempts" | "reset" | "password" | "typing"
+    "results" | "sections" | "questions" | "candidates" | "attempts" | "reset" | "password" | "typing" | "competency"
   >("results");
   const [supabase] = useState(getSupabaseBrowserClient());
 
@@ -129,6 +130,10 @@ export default function AdminPage() {
   const [resetAttemptId, setResetAttemptId] = useState<string>("");
   const [resetSectionId, setResetSectionId] = useState<string>("");
   const [isResetting, setIsResetting] = useState(false);
+  // English Competency results, keyed by the main assessment attempt id (they share it).
+  const [competencyByAttemptId, setCompetencyByAttemptId] = useState<
+    Map<string, { status: string; overall_score: number | null; cefr_level: string | null }>
+  >(new Map());
   const [adminPwdInput, setAdminPwdInput] = useState("");
   const [showAuthPrompt, setShowAuthPrompt] = useState(true);
   const [authError, setAuthError] = useState("");
@@ -247,6 +252,7 @@ export default function AdminPage() {
       })
       .map((s) => ({ id: s.id, title: s.title })),
     { id: "__typing__", title: "Typing Speed & Accuracy" },
+    { id: "__competency__", title: "English Competency" },
   ];
 
   const loadData = useCallback(async () => {
@@ -298,6 +304,22 @@ export default function AdminPage() {
       if (ansRes.data) setAttemptAnswers(ansRes.data);
       if (typingParRes.data) setTypingParagraphs(typingParRes.data);
       if (typingRes.data) setTypingResults(typingRes.data);
+
+      const compRes = await fetch("/api/admin/competency/attempts")
+        .then((r) => r.json())
+        .catch(() => null);
+      if (compRes?.ok) {
+        const m = new Map<string, { status: string; overall_score: number | null; cefr_level: string | null }>();
+        for (const a of compRes.attempts as Array<{
+          id: string;
+          status: string;
+          overall_score: number | null;
+          cefr_level: string | null;
+        }>) {
+          m.set(a.id, { status: a.status, overall_score: a.overall_score, cefr_level: a.cefr_level });
+        }
+        setCompetencyByAttemptId(m);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -317,6 +339,36 @@ export default function AdminPage() {
 
     setIsResetting(true);
     try {
+      if (resetSectionId === "__competency__") {
+        const res = await fetch("/api/admin/competency/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            attemptId: resetAttemptId || undefined,
+            candidateEmail: resetUserEmail.trim().toLowerCase(),
+          }),
+        });
+        const body = (await res.json().catch(() => null)) as
+          | { ok: true; attemptId: string; deletedAttempts: number }
+          | { ok: false; error: string }
+          | null;
+        if (!res.ok || !body || !body.ok) {
+          setAlertMessage({
+            title: "Reset Failed",
+            message: body && "error" in body ? body.error : "Failed to reset English Competency.",
+            type: "error",
+          });
+          return;
+        }
+        setAlertMessage({
+          title: "Reset Complete",
+          message: `English Competency reset. The candidate can reopen their assessment and take it again. Attempt: ${body.attemptId}`,
+          type: "success",
+        });
+        void loadData();
+        return;
+      }
+
       const res = await fetch("/api/admin/reset-assessment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1004,7 +1056,7 @@ export default function AdminPage() {
         
         <div className="flex gap-4 border-b border-slate-200 dark:border-white/10 pb-2">
           {(
-            ["results", "typing", "sections", "questions", "candidates", "attempts", "reset", "password"] as const
+            ["results", "typing", "competency", "sections", "questions", "candidates", "attempts", "reset", "password"] as const
           ).map((tab) => (
             <button
               key={tab}
@@ -1112,6 +1164,7 @@ export default function AdminPage() {
                           {sections.map(s => (
                              <th key={s.id} className="py-2 px-2 whitespace-nowrap" title={s.title}>{s.title}</th>
                           ))}
+                          <th className="py-2 px-2 whitespace-nowrap" title="English Competency (out of 100, not included in Total Score)">English Competency</th>
                           <th className="py-2 px-2 font-bold text-indigo-600 dark:text-indigo-400">Total Score</th>
                         </tr>
                       </thead>
@@ -1308,6 +1361,15 @@ export default function AdminPage() {
                                   })()}
                                 </td>
                               ))}
+                              <td className="py-2 px-2 whitespace-nowrap">
+                                {(() => {
+                                  const c = competencyByAttemptId.get(attempt.id);
+                                  if (!c) return "-";
+                                  if (c.status !== "completed" || c.overall_score === null) return "In progress";
+                                  const level = (c.cefr_level ?? "").split(" ")[0];
+                                  return `${c.overall_score}${level ? ` (${level})` : ""}`;
+                                })()}
+                              </td>
                               <td className="py-2 px-2 font-bold text-indigo-600 dark:text-indigo-400">{totalScore}</td>
                             </tr>
                           );
@@ -1518,6 +1580,8 @@ export default function AdminPage() {
                 </div>
               </div>
             )}
+
+            {activeTab === "competency" && <CompetencyAdmin />}
 
             {activeTab === "reset" && (
               <div className="flex flex-col gap-4 max-w-3xl">

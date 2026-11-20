@@ -1,9 +1,11 @@
+import { RECORDING_LIMITS } from "@/lib/competency";
 import {
   BookOpen,
   Headphones,
   Keyboard,
   Landmark,
   MessageSquareText,
+  Mic,
   ShieldCheck,
   TrendingUp,
 } from "lucide-react";
@@ -67,7 +69,7 @@ export default async function Home() {
           <div className="card p-7 dark:card-dark">
             <div className="flex flex-col gap-3">
               <div className="pill w-fit">
-                <span>Typing + 6 sections</span>
+                <span>Typing + 7 sections</span>
                 <span className="h-1 w-1 rounded-full bg-slate-400" />
                 <span>MCQ + Spoken</span>
               </div>
@@ -181,6 +183,20 @@ export default async function Home() {
                 <div className="text-sm font-semibold">Spoken English</div>
                 <div className="text-sm text-slate-600 dark:text-slate-300">
                   {toMinutesLabel(spokenEnglishSeconds)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card p-6 dark:card-dark">
+            <div className="flex items-start gap-4">
+              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-teal-500/10 text-teal-700 dark:text-teal-300">
+                <Mic className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="text-sm font-semibold">English Competency</div>
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  {toMinutesLabel(RECORDING_LIMITS.main.maxSec)}
                 </div>
               </div>
             </div>

@@ -4,6 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
+import CompetencyRunner from "@/components/CompetencyRunner";
+import { RECORDING_LIMITS } from "@/lib/competency";
 import type {
   AssessmentQuestion,
   AssessmentSection,
@@ -24,11 +26,16 @@ type Step =
   | { type: "loading" }
   | { type: "error"; message: string }
   | { type: "typing" }
+  | { type: "competency" }
   | { type: "menu" }
   | { type: "ready" }
   | { type: "done"; totalScore: number; maxScore: number };
 
 type SelectedChoice = "A" | "B" | "C" | "D";
+
+// English Competency is a virtual section (no questions) that always comes last.
+const COMPETENCY_SECTION_ID = "__competency__";
+const isCompetencySection = (s: AssessmentSection | null | undefined) => s?.id === COMPETENCY_SECTION_ID;
 
 type SpeechRecognitionLike = {
   continuous: boolean;
@@ -81,6 +88,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const [typingTimeLeft, setTypingTimeLeft] = useState<number>(60);
   const [typingStage, setTypingStage] = useState<"idle" | "running" | "saving" | "done">("idle");
   const [typingCompleted, setTypingCompleted] = useState(false);
+  const [competencyCompleted, setCompetencyCompleted] = useState(false);
   const [typingSummary, setTypingSummary] = useState<{
     wpm: number;
     accuracy: number;
@@ -380,6 +388,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
   const isSectionDone = useCallback(
     (s: AssessmentSection) => {
       if (skippedSectionIds.has(s.id)) return true;
+      if (isCompetencySection(s)) return competencyCompleted;
       const slug = (s.slug ?? "").toLowerCase();
       const title = (s.title ?? "").toLowerCase();
       const isTyping = slug.includes("typing") || title.includes("typing");
@@ -388,7 +397,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
       if (qs.length === 0) return true;
       return qs.every((q) => answeredQuestionIds.has(q.id));
     },
-    [answeredQuestionIds, questionsBySection, skippedSectionIds, typingCompleted],
+    [answeredQuestionIds, competencyCompleted, questionsBySection, skippedSectionIds, typingCompleted],
   );
 
   const nextUnfinishedSectionIndex = useCallback(
@@ -454,7 +463,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
 
   // Disable back button and show warning modal
   useEffect(() => {
-    if (step.type === "ready" || step.type === "typing") {
+    if (step.type === "ready" || step.type === "typing" || step.type === "competency") {
       history.pushState(null, "", window.location.href);
       const handlePopState = () => {
         history.pushState(null, "", window.location.href);
@@ -548,6 +557,15 @@ export default function AssessmentRunner({ attemptId }: Props) {
         sortedSections.splice(insertAt, 0, typingSection);
       }
 
+      sortedSections.push({
+        id: COMPETENCY_SECTION_ID,
+        slug: "english_competency",
+        title: "English Competency",
+        description: null,
+        sort_order: 10000,
+        time_limit_seconds: RECORDING_LIMITS.main.maxSec,
+      });
+
       const { data: questionsData, error: questionsError } = await supabase
         .from("assessment_questions")
         .select(
@@ -619,6 +637,13 @@ export default function AssessmentRunner({ attemptId }: Props) {
       const typingDone = Boolean(typingRow?.completed_at);
       setTypingCompleted(typingDone);
 
+      // 404 means the candidate has not started English Competency yet.
+      const competencyDone = await fetch(`/api/competency/attempt/${attemptId}`)
+        .then((r) => r.json())
+        .then((b: { ok?: boolean; attempt?: { stage?: string } }) => Boolean(b?.ok && b.attempt?.stage === "done"))
+        .catch(() => false);
+      setCompetencyCompleted(competencyDone);
+
       let skipped = new Set<string>();
       const skippedStr = sessionStorage.getItem(`assessment_skipped_${attemptId}`);
       if (skippedStr) {
@@ -638,6 +663,10 @@ export default function AssessmentRunner({ attemptId }: Props) {
         const pruned = new Set<string>();
         for (const sectionId of skipped) {
           const section = byId.get(sectionId) ?? null;
+          if (isCompetencySection(section)) {
+            if (competencyDone) pruned.add(sectionId);
+            continue;
+          }
           if (isTypingSection(section)) {
             if (typingDone) pruned.add(sectionId);
             continue;
@@ -667,6 +696,13 @@ export default function AssessmentRunner({ attemptId }: Props) {
         for (let si = 0; si < sortedSections.length; si++) {
           const section = sortedSections[si] as AssessmentSection;
           if (skipped.has(section.id)) continue;
+          if (isCompetencySection(section)) {
+            if (competencyDone) continue;
+            found = true;
+            startSectionIndex = si;
+            startQuestionIndex = 0;
+            break;
+          }
           if (isTypingSection(section)) {
             found = true;
             startSectionIndex = si;
@@ -785,6 +821,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
 
       const isSectionDoneLocal = (s: AssessmentSection) => {
         if (skipped.has(s.id)) return true;
+        if (isCompetencySection(s)) return competencyDone;
         if (isTypingSection(s)) return typingDone;
         const qs = map[s.id] ?? [];
         if (qs.length === 0) return true;
@@ -1452,6 +1489,20 @@ export default function AssessmentRunner({ attemptId }: Props) {
       if (!target) return;
       if (skippedSectionIds.has(target.id)) return;
 
+      if (isCompetencySection(target)) {
+        if (competencyCompleted) return;
+        setSectionIndex(targetIndex);
+        setQuestionIndex(0);
+        setSelectedChoice(null);
+        setTimeLeft(null);
+        sessionStorage.setItem(
+          `assessment_state_${attemptId}`,
+          JSON.stringify({ sectionIndex: targetIndex, questionIndex: 0, timeLeft: null, lastUpdated: Date.now() }),
+        );
+        setStep({ type: "competency" });
+        return;
+      }
+
       const slug = (target.slug ?? "").toLowerCase();
       const title = (target.title ?? "").toLowerCase();
       const isTyping = slug.includes("typing") || title.includes("typing");
@@ -1513,6 +1564,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
     [
       answeredQuestionIds,
       attemptId,
+      competencyCompleted,
       questionsBySection,
       sections,
       skippedSectionIds,
@@ -1588,6 +1640,19 @@ export default function AssessmentRunner({ attemptId }: Props) {
     );
   }
 
+  if (step.type === "competency") {
+    return (
+      <CompetencyRunner
+        attemptId={attemptId}
+        onComplete={() => {
+          setCompetencyCompleted(true);
+          sessionStorage.removeItem(`assessment_state_${attemptId}`);
+          goToMenu(0);
+        }}
+      />
+    );
+  }
+
   if (step.type === "menu") {
     const allDone = sections.every((s) => isSectionDone(s));
     const selected = sections[menuSectionIndex] ?? null;
@@ -1608,6 +1673,7 @@ export default function AssessmentRunner({ attemptId }: Props) {
               const slug = (s.slug ?? "").toLowerCase();
               const title = (s.title ?? "").toLowerCase();
               const isTyping = slug.includes("typing") || title.includes("typing");
+              const isCompetency = isCompetencySection(s);
               const qs = questionsBySection[s.id] ?? [];
               const isSkipped = skippedSectionIds.has(s.id);
               const done = isSectionDone(s);
@@ -1643,7 +1709,9 @@ export default function AssessmentRunner({ attemptId }: Props) {
                     <div className="flex-1">
                       <div className="font-semibold">{s.title}</div>
                       <div className="text-xs text-slate-500 dark:text-slate-300">
-                        {isTyping ? "Typing test" : `${qs.length} questions`} · {durationMinutes} min
+                        {isCompetency
+                          ? `Speaking test · 1–${durationMinutes} min`
+                          : `${isTyping ? "Typing test" : `${qs.length} questions`} · ${durationMinutes} min`}
                       </div>
                     </div>
                   </button>

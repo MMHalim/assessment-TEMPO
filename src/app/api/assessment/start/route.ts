@@ -1,29 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabaseClient";
-
-function pickString(v: unknown): string | null {
-  return typeof v === "string" ? v : null;
-}
-
-function normalizeEmail(email: string): string {
-  return email
-    .replace(/\u00a0/g, " ")
-    .replace(/[\u200b-\u200d\ufeff]/g, "")
-    .trim()
-    .toLowerCase();
-}
-
-function normalizeKeyPart(v: string): string {
-  return (v ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/[\u200b-\u200d\ufeff]/g, "")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-function escapeLike(v: string): string {
-  return v.replace(/[\\%_]/g, (m) => `\\${m}`);
-}
+import { verifyCandidate } from "@/lib/candidateAccess";
 
 export async function POST(request: Request) {
   const supabase = getSupabaseServerClient();
@@ -39,98 +16,15 @@ export async function POST(request: Request) {
     | null;
 
   const name = (body?.name ?? "").trim();
-  const timestamp = (body?.timestamp ?? "").trim();
-  const email = normalizeEmail(body?.email ?? "");
-
-  if (!name || !timestamp) {
-    return NextResponse.json(
-      { ok: false, error: "Missing candidate selection" },
-      { status: 400 },
-    );
+  const check = await verifyCandidate(supabase, {
+    name,
+    timestamp: body?.timestamp ?? "",
+    email: body?.email ?? "",
+  });
+  if (!check.ok) {
+    return NextResponse.json({ ok: false, error: check.error }, { status: check.status });
   }
-
-  if (!email || !email.includes("@")) {
-    return NextResponse.json(
-      { ok: false, error: "Invalid email" },
-      { status: 400 },
-    );
-  }
-
-  const lookups = [
-    { nameCol: "Name", tsCol: "Timestamp", emailCol: "Email" },
-    { nameCol: "Name", tsCol: "Timestamp", emailCol: "Email_Address" },
-    { nameCol: "name", tsCol: "timestamp", emailCol: "email" },
-    { nameCol: "name", tsCol: "timestamp", emailCol: "email_address" },
-    { nameCol: "Name", tsCol: "Timestamp", emailCol: "email" },
-    { nameCol: "Name", tsCol: "Timestamp", emailCol: "email_address" },
-    { nameCol: "name", tsCol: "timestamp", emailCol: "Email" },
-    { nameCol: "name", tsCol: "timestamp", emailCol: "Email_Address" },
-  ] as const;
-
-  let matchedEmail = "";
-  let foundCandidateRow = false;
-  let hadReadableLookup = false;
-  const normalizedName = normalizeKeyPart(name);
-  const normalizedTimestamp = normalizeKeyPart(timestamp);
-  const namePrefix = `${escapeLike(normalizedName)}%`;
-  const tsPrefix = `${escapeLike(normalizedTimestamp)}%`;
-
-  for (const { nameCol, tsCol, emailCol } of lookups) {
-    const { data, error } = await supabase
-      .from("empDB")
-      .select(`${nameCol},${tsCol},${emailCol}`)
-      .ilike(nameCol, namePrefix)
-      .ilike(tsCol, tsPrefix)
-      .limit(20);
-
-    if (error) continue;
-    hadReadableLookup = true;
-    const rows = (data ?? []) as Array<Record<string, unknown>>;
-    if (rows.length === 0) continue;
-
-    for (const record of rows) {
-      const rawName = pickString(record[nameCol]) ?? "";
-      const rawTs = pickString(record[tsCol]) ?? "";
-      const rowName = normalizeKeyPart(rawName);
-      const rowTs = normalizeKeyPart(rawTs);
-      if (rowName !== normalizedName) continue;
-      if (rowTs !== normalizedTimestamp) continue;
-      foundCandidateRow = true;
-
-      const stored = normalizeEmail(pickString(record[emailCol]) ?? "");
-      if (stored && stored === email) {
-        matchedEmail = stored;
-        break;
-      }
-    }
-
-    if (matchedEmail) break;
-  }
-
-  if (!hadReadableLookup) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          "Assessment access is not configured. Please contact the administrator.",
-      },
-      { status: 500 },
-    );
-  }
-
-  if (!foundCandidateRow) {
-    return NextResponse.json(
-      { ok: false, error: "Wrong email, please try again !" },
-      { status: 404 },
-    );
-  }
-
-  if (!matchedEmail) {
-    return NextResponse.json(
-      { ok: false, error: "Wrong email, please try again !" },
-      { status: 403 },
-    );
-  }
+  const matchedEmail = check.email;
 
   const { count: completedCount, error: completedError } = await supabase
     .from("assessment_attempts")
